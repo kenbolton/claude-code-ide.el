@@ -693,9 +693,9 @@ If DIRECTORY is not provided, use the current working directory."
   "Set the Claude Code PROCESS for DIRECTORY or current working directory."
   ;; Check if this is the first session starting
   (when-let* ((resize-handler
-              (and claude-code-ide-prevent-reflow-glitch
-                   (= (hash-table-count claude-code-ide--processes) 0)
-                   (claude-code-ide--terminal-resize-handler))))
+               (and claude-code-ide-prevent-reflow-glitch
+                    (= (hash-table-count claude-code-ide--processes) 0)
+                    (claude-code-ide--terminal-resize-handler))))
     ;; Apply advice globally for the first session
     (advice-add resize-handler
                 :around #'claude-code-ide--terminal-reflow-filter))
@@ -830,9 +830,9 @@ side window — the shared navigation path used across the package."
           (remhash directory claude-code-ide--processes)
           ;; Check if this was the last session
           (when-let* ((resize-handler
-                      (and claude-code-ide-prevent-reflow-glitch
-                           (= (hash-table-count claude-code-ide--processes) 0)
-                           (claude-code-ide--terminal-resize-handler))))
+                       (and claude-code-ide-prevent-reflow-glitch
+                            (= (hash-table-count claude-code-ide--processes) 0)
+                            (claude-code-ide--terminal-resize-handler))))
             ;; Remove advice globally when no sessions remain
             (advice-remove resize-handler
                            #'claude-code-ide--terminal-reflow-filter))
@@ -1280,19 +1280,46 @@ conversation in the current directory."
     (claude-code-ide-log "Claude Code is not installed.")))
 
 ;;;###autoload
-(defun claude-code-ide-stop ()
-  "Stop the Claude Code session for the current project or directory."
+(defun claude-code-ide-stop (&optional stop-all)
+  "Stop the Claude Code session for the current project or directory.
+With prefix argument STOP-ALL, stop all active Claude Code sessions
+after confirmation."
+  (interactive "P")
+  (if stop-all
+      (claude-code-ide-stop-all)
+    (let* ((working-dir (claude-code-ide--get-working-directory))
+           (buffer-name (claude-code-ide--get-buffer-name)))
+      (if-let ((buffer (get-buffer buffer-name)))
+          (progn
+            ;; Kill the buffer (cleanup will be handled by hooks)
+            ;; The process sentinel will handle cleanup when the process dies
+            (kill-buffer buffer)
+            (claude-code-ide-log "Stopping Claude Code in %s..."
+                                 (file-name-nondirectory (directory-file-name working-dir))))
+        (claude-code-ide-log "No Claude Code session is running in this directory")))))
+
+;;;###autoload
+(defun claude-code-ide-stop-all ()
+  "Stop all active Claude Code sessions after confirmation."
   (interactive)
-  (let* ((working-dir (claude-code-ide--get-working-directory))
-         (buffer-name (claude-code-ide--get-buffer-name)))
-    (if-let* ((buffer (get-buffer buffer-name)))
-        (progn
-          ;; Kill the buffer (cleanup will be handled by hooks)
-          ;; The process sentinel will handle cleanup when the process dies
-          (kill-buffer buffer)
-          (claude-code-ide-log "Stopping Claude Code in %s..."
-                               (file-name-nondirectory (directory-file-name working-dir))))
-      (claude-code-ide-log "No Claude Code session is running in this directory"))))
+  (claude-code-ide--cleanup-dead-processes)
+  (let ((session-count (hash-table-count claude-code-ide--processes)))
+    (if (zerop session-count)
+        (claude-code-ide-log "No active Claude Code sessions")
+      (when (yes-or-no-p (format "Stop all %d Claude Code session%s? "
+                                 session-count
+                                 (if (= session-count 1) "" "s")))
+        (let ((stopped 0))
+          (maphash (lambda (directory _process)
+                     (let* ((buffer-name (funcall claude-code-ide-buffer-name-function directory))
+                            (buffer (get-buffer buffer-name)))
+                       (when (and buffer (buffer-live-p buffer))
+                         (kill-buffer buffer)
+                         (cl-incf stopped))))
+                   claude-code-ide--processes)
+          (claude-code-ide-log "Stopped %d Claude Code session%s"
+                               stopped
+                               (if (= stopped 1) "" "s")))))))
 
 
 ;;;###autoload
