@@ -327,6 +327,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("c" claude-code-ide--continue-if-no-session :description claude-code-ide--continue-description)
     ("r" claude-code-ide--resume-if-no-session :description claude-code-ide--resume-description)
     ("q" "Stop current session" claude-code-ide-stop)
+    ("Q" "Stop all sessions" claude-code-ide-stop-all)
     ("o" "Session overview" claude-code-ide-status)]
    ["Navigation"
     ("b" "Switch to Claude buffer" claude-code-ide-switch-to-buffer)
