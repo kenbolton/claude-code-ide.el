@@ -72,6 +72,7 @@
 (defvar vterm-shell)
 (defvar vterm-environment)
 (defvar eat-term-name)
+(defvar vterm-copy-mode)
 (defvar vterm--process)
 (defvar ghostel-set-title-function)
 (defvar ghostel-enable-title-tracking)
