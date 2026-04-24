@@ -565,7 +565,10 @@ have completed before cleanup.  Waits up to 5 seconds."
         (mock-ghostel-args nil)
         (mock-ghostel-env nil)
         (mock-ghostel-default-directory nil)
-        (mock-process (start-process "mock" nil "true")))
+        (mock-process (start-process "mock" nil "true"))
+        ;; Keep EDITOR/VISUAL handling out of this test; it is covered
+        ;; independently by `claude-code-ide-test-editor-env-vars'.
+        (claude-code-ide-editor-command nil))
     (cl-letf (((symbol-function 'claude-code-ide--terminal-ensure-backend)
                (lambda () nil))  ; Mock the ensure function to do nothing
               ((symbol-function 'vterm)
@@ -729,6 +732,32 @@ with an explanatory error rather than operating on the dead buffer."
     (let ((claude-code-ide-ghostel-evil-escape 'evil))
       (claude-code-ide--apply-ghostel-evil-escape)
       (should (eq evil-ghostel--escape-mode 'auto)))))
+
+(ert-deftest claude-code-ide-test-editor-env-vars ()
+  "Test EDITOR/VISUAL env-var construction from the editor defcustom."
+  ;; Default "emacsclient" produces both EDITOR and VISUAL.
+  (let ((claude-code-ide-editor-command "emacsclient"))
+    (let ((env (claude-code-ide--editor-env-vars)))
+      (should (member "EDITOR=emacsclient" env))
+      (should (member "VISUAL=emacsclient" env))))
+
+  ;; A custom command with arguments is preserved verbatim.
+  (let ((claude-code-ide-editor-command "emacsclient -s mysrv"))
+    (let ((env (claude-code-ide--editor-env-vars)))
+      (should (member "EDITOR=emacsclient -s mysrv" env))
+      (should (member "VISUAL=emacsclient -s mysrv" env))))
+
+  ;; An arbitrary non-emacsclient command is passed through as-is.
+  (let ((claude-code-ide-editor-command "vi"))
+    (let ((env (claude-code-ide--editor-env-vars)))
+      (should (member "EDITOR=vi" env))
+      (should (member "VISUAL=vi" env))))
+
+  ;; nil or empty string disables the override entirely.
+  (let ((claude-code-ide-editor-command nil))
+    (should (null (claude-code-ide--editor-env-vars))))
+  (let ((claude-code-ide-editor-command ""))
+    (should (null (claude-code-ide--editor-env-vars)))))
 
 (ert-deftest claude-code-ide-test-vterm-smart-renderer-passthrough ()
   "Test that vterm smart renderer passes through normal text immediately."

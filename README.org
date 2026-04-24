@@ -313,6 +313,7 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-no-flicker~                    | Enable flicker-free terminal renderer       | ~nil~                                  |
 | ~claude-code-ide-prevent-reflow-glitch~         | Prevent terminal reflow glitch (bug #1422)  | ~t~                                    |
 | ~claude-code-ide-enable-execute-code~           | Allow model to evaluate Elisp in Emacs      | ~t~                                    |
+| ~claude-code-ide-editor-command~                | Value for EDITOR/VISUAL (e.g. plan-mode ~C-g~) | ~"emacsclient"~                        |
 
 *** Side Window Configuration
 
@@ -451,6 +452,23 @@ To disable it:
 
 #+begin_src emacs-lisp
 (setq claude-code-ide-enable-execute-code nil)
+#+end_src
+
+*** External Editor Integration
+
+When Claude Code invokes an external editor (for example when you press =C-g= in plan mode to revise the plan), it runs the command in =$EDITOR= on a temporary file. By default, =claude-code-ide= sets =$EDITOR= and =$VISUAL= to =emacsclient=, so the temp file opens in the current Emacs instance instead of a modal terminal editor inside the Claude buffer.
+
+When using =emacsclient=, the Emacs server must already be running; this package does not start it for you. Start it with =M-x server-start= or by adding =(server-start)= to your init file. The =emacsclient= binary must be on =PATH=, or you can point to it explicitly. Additional arguments are allowed:
+
+#+begin_src emacs-lisp
+;; Pin to a specific server socket
+(setq claude-code-ide-editor-command "emacsclient -s mysrv")
+
+;; Use an absolute path to the client
+(setq claude-code-ide-editor-command "/usr/local/bin/emacsclient")
+
+;; Inherit EDITOR/VISUAL from the shell environment instead
+(setq claude-code-ide-editor-command nil)
 #+end_src
 
 *** Custom Buffer Naming

@@ -263,6 +263,25 @@ alternative rendering mode that eliminates terminal flicker."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-editor-command "emacsclient"
+  "Command exposed as EDITOR and VISUAL to the Claude Code subprocess.
+When Claude Code invokes an external editor (for example when the
+user presses \\`C-g' in plan mode), it will run this command on a
+temporary file.  The default \"emacsclient\" routes the file into
+the current Emacs instance, so editing happens in Emacs rather than
+in a modal terminal editor inside the Claude buffer.
+
+When using \"emacsclient\", the Emacs server must already be
+running (start it with `M-x server-start' or by adding
+\(server-start) to your init file).  This package does not start
+the server for you.
+
+Set to nil or an empty string to leave the environment untouched
+and inherit whatever EDITOR/VISUAL the user's shell provides."
+  :type '(choice (const :tag "Inherit from shell" nil)
+                 (string :tag "Editor command"))
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-prevent-reflow-glitch t
   "Workaround for Claude Code terminal scrolling bug #1422.
 When non-nil (default), prevents the terminal from reflowing on height-only
@@ -988,6 +1007,18 @@ absolute path sidesteps that lookup."
       program))
 
 
+(defun claude-code-ide--editor-env-vars ()
+  "Return EDITOR/VISUAL env-var strings for the Claude subprocess.
+Returns a list of two \"NAME=VALUE\" entries when
+`claude-code-ide-editor-command' names a command, or nil to leave
+EDITOR/VISUAL inherited from the parent environment."
+  (when (and (stringp claude-code-ide-editor-command)
+             (not (string-empty-p claude-code-ide-editor-command)))
+    (let ((cmd claude-code-ide-editor-command))
+      (list (format "EDITOR=%s" cmd)
+            (format "VISUAL=%s" cmd)))))
+
+
 (defun claude-code-ide--create-terminal-session (buffer-name working-dir port continue resume session-id)
   "Create a new terminal session for Claude Code.
 BUFFER-NAME is the name for the terminal buffer.
@@ -1003,15 +1034,19 @@ Signals an error if terminal fails to initialize."
   (claude-code-ide--terminal-ensure-backend)
   (let* ((claude-cmd (claude-code-ide--build-claude-command continue resume session-id))
          (default-directory working-dir)
+         (editor-env (claude-code-ide--editor-env-vars))
          (env-vars (append (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
                                  "TERM_PROGRAM=emacs"
                                  "FORCE_CODE_TERMINAL=true")
                            (when claude-code-ide-no-flicker
-                             (list "CLAUDE_CODE_NO_FLICKER=1")))))
+                             (list "CLAUDE_CODE_NO_FLICKER=1"))
+                           editor-env)))
     ;; Log the command for debugging
     (claude-code-ide-debug "Starting Claude with command: %s" claude-cmd)
     (claude-code-ide-debug "Working directory: %s" working-dir)
     (claude-code-ide-debug "Environment: CLAUDE_CODE_SSE_PORT=%d" port)
+    (when editor-env
+      (claude-code-ide-debug "Environment: %s" (car editor-env)))
     (claude-code-ide-debug "Session ID: %s" session-id)
     (claude-code-ide-debug "Terminal backend: %s" claude-code-ide-terminal-backend)
 
