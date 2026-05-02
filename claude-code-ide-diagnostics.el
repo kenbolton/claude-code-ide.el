@@ -120,7 +120,10 @@ columns, so both are decremented here."
                                         (character . ,(if end-col (1- end-col) 0))))))
                       (severity . ,(claude-code-ide-diagnostics--severity-to-string
                                     (flycheck-error-level err)))
-                      (source . ,(or (flycheck-error-checker err) "flycheck"))
+                      (source . ,(let ((c (flycheck-error-checker err)))
+                                   (cond ((symbolp c) (if c (symbol-name c) "flycheck"))
+                                         ((stringp c) c)
+                                         (t "flycheck"))))
                       (message . ,(flycheck-error-message err)))))
                 flycheck-current-errors)))))
 
@@ -148,8 +151,10 @@ line is decremented; `current-column' is already zero-based."
                                           (character . ,end-col)))))
                         (severity . ,(claude-code-ide-diagnostics--severity-to-string
                                       (flymake-diagnostic-type diag)))
-                        (source . ,(symbol-name (or (flymake-diagnostic-backend diag)
-                                                    'flymake)))
+                        (source . ,(let ((b (or (flymake-diagnostic-backend diag) 'flymake)))
+                                     (cond ((symbolp b) (symbol-name b))
+                                           ((stringp b) b)
+                                           (t "flymake"))))
                         (message . ,(flymake-diagnostic-text diag))))))
                 (flymake-diagnostics))))))
 
