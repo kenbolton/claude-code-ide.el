@@ -457,8 +457,11 @@ cursor management, and process buffering for superior user experience."
   (setq-local cursor-in-non-selected-windows nil)
   (setq-local blink-cursor-mode nil)
   (setq-local cursor-type nil)  ; Let vterm handle the cursor entirely
-  ;; disable hl-line-mode, eliminates another source of flicker
-  (setq-local global-hl-line-mode nil)
+  ;; Hide the hl-line overlay to eliminate another source of flicker, but keep
+  ;; `global-hl-line-mode' running: binding the global mode variable buffer-locally
+  ;; never disabled it here, and the mode's hooks still need to fire to clear the
+  ;; sticky highlight it leaves in other windows.
+  (setq-local hl-line-range-function #'ignore)
   (when (featurep 'hl-line)
     (hl-line-mode -1))
   ;; make sure the non-breaking space in the prompt isn't themed
