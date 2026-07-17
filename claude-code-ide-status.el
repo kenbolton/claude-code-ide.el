@@ -153,7 +153,7 @@ the first time is only recorded as a baseline, so a merely-open terminal is
 not mistaken for one that just produced output."
   (let ((now (float-time)))
     (dolist (dir (claude-code-ide-session-directories))
-      (when-let ((buffer (get-buffer (claude-code-ide-session-buffer-name dir))))
+      (when-let* ((buffer (get-buffer (claude-code-ide-session-buffer-name dir))))
         (let ((tick (buffer-chars-modified-tick buffer))
               (entry (gethash dir claude-code-ide-status--activity)))
           (cond
@@ -165,7 +165,7 @@ not mistaken for one that just produced output."
 (defun claude-code-ide-status--busy-p (dir)
   "Return non-nil when DIR's terminal produced output very recently.
 \"Recently\" is within `claude-code-ide-status-busy-timeout' seconds."
-  (when-let ((entry (gethash dir claude-code-ide-status--activity)))
+  (when-let* ((entry (gethash dir claude-code-ide-status--activity)))
     (< (- (float-time) (cdr entry)) claude-code-ide-status-busy-timeout)))
 
 (defun claude-code-ide-status--state-for (dir)
@@ -231,7 +231,7 @@ Assumes the current buffer is the status buffer."
 (defun claude-code-ide-status--maybe-refresh ()
   "Rebuild and redraw the status list, but only when it is displayed.
 Cheap by design: if the status buffer is not on screen, do nothing."
-  (when-let ((buf (get-buffer claude-code-ide-status-buffer-name)))
+  (when-let* ((buf (get-buffer claude-code-ide-status-buffer-name)))
     (when (get-buffer-window buf t)
       (with-current-buffer buf
         (claude-code-ide-status--redraw)))))
@@ -275,7 +275,7 @@ DIR defaults to the current project directory."
   "Return the session directory whose terminal is BUFFER, or nil.
 Reverses the deterministic mapping from directory to buffer name so any
 live session's terminal buffer can be recognised regardless of backend."
-  (when-let ((name (and (buffer-live-p buffer) (buffer-name buffer))))
+  (when-let* ((name (and (buffer-live-p buffer) (buffer-name buffer))))
     (catch 'found
       (dolist (dir (claude-code-ide-session-directories))
         (when (equal name (claude-code-ide-session-buffer-name dir))
@@ -292,7 +292,7 @@ attending to it, so any explicit waiting flag is dropped."
                  ((framep frame-or-window)
                   (window-buffer (frame-selected-window frame-or-window)))
                  (t (current-buffer)))))
-    (when-let ((dir (claude-code-ide-status--session-dir-for-buffer buffer)))
+    (when-let* ((dir (claude-code-ide-status--session-dir-for-buffer buffer)))
       (when (gethash dir claude-code-ide-status--attention)
         (claude-code-ide-status-mark-active dir)))))
 
@@ -384,7 +384,7 @@ rather than by the glyph of the label string."
 been idle (or a dash when that is unknown)."
   (cond
    ((claude-code-ide-status--busy-p dir) "working")
-   ((when-let ((entry (gethash dir claude-code-ide-status--activity)))
+   ((when-let* ((entry (gethash dir claude-code-ide-status--activity)))
       (and (> (cdr entry) 0)
            (format "idle %s"
                    (claude-code-ide-status--format-duration
@@ -474,7 +474,7 @@ result rather than repeating it; see `claude-code-ide-status--resume-entries'."
       (dolist (sub (directory-files claude-code-ide-status-projects-directory t
                                     directory-files-no-dot-files-regexp))
         (when (file-directory-p sub)
-          (when-let ((dir (claude-code-ide-status--project-cwd sub)))
+          (when-let* ((dir (claude-code-ide-status--project-cwd sub)))
             (push (cons (nth 5 (file-attributes sub)) dir) rows))))
       ;; Newest first.
       (setq rows (sort rows (lambda (a b) (time-less-p (car b) (car a)))))
@@ -502,7 +502,7 @@ cheap; `claude-code-ide-status-refresh' forces an immediate rebuild."
             ;; Rebuild if cached rows have a stale column count — e.g. after a
             ;; code reload changed the columns — so printing never arefs past
             ;; a short vector.
-            (when-let ((row (car claude-code-ide-status--resume-cache)))
+            (when-let* ((row (car claude-code-ide-status--resume-cache)))
               (/= (length (cadr row)) (length claude-code-ide-status--columns))))
     (setq claude-code-ide-status--resume-cache (claude-code-ide-status--build-resume-rows)
           claude-code-ide-status--resume-cache-time (float-time)))
@@ -747,7 +747,7 @@ project, resume Claude in that directory."
       (user-error "No session on this line"))
     (pcase kind
       ('live
-       (if-let ((buffer (get-buffer (claude-code-ide-session-buffer-name dir))))
+       (if-let* ((buffer (get-buffer (claude-code-ide-session-buffer-name dir))))
            (progn
              (claude-code-ide-status-mark-active dir)
              (claude-code-ide-pop-to-session-buffer buffer))
@@ -772,7 +772,7 @@ Returns the new window, or nil when there is no main window or it is too
 small to split — so it can serve as a `display-buffer' action function
 with a fallback.  Splitting the main window keeps the overview and docked
 terminals intact."
-  (when-let ((main (claude-code-ide-status--main-window)))
+  (when-let* ((main (claude-code-ide-status--main-window)))
     ;; `split-window' signals when the window is too small; return nil then
     ;; so callers fall back to the ordinary side-window display.
     (ignore-errors
@@ -793,10 +793,10 @@ leaving the overview window and other docked windows untouched."
       (user-error "No session on this line"))
     (pcase kind
       ('live
-       (if-let ((buffer (get-buffer (claude-code-ide-session-buffer-name dir))))
+       (if-let* ((buffer (get-buffer (claude-code-ide-session-buffer-name dir))))
            (progn
              (claude-code-ide-status-mark-active dir)
-             (if-let ((win (claude-code-ide-status--display-in-split buffer)))
+             (if-let* ((win (claude-code-ide-status--display-in-split buffer)))
                  (select-window win)
                ;; No main window to split (frame is all side windows): fall
                ;; back to the ordinary side-window display.
@@ -828,7 +828,7 @@ stop.  The confirmation requires a full `yes'/`no' answer even when
     (when (let ((use-short-answers nil))
             (yes-or-no-p (format "Stop Claude session in %s? "
                                  (abbreviate-file-name dir))))
-      (if-let ((buffer (get-buffer (claude-code-ide-session-buffer-name dir))))
+      (if-let* ((buffer (get-buffer (claude-code-ide-session-buffer-name dir))))
           (progn
             (kill-buffer buffer)
             (claude-code-ide-status--maybe-refresh))
