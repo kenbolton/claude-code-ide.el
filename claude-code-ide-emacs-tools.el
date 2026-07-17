@@ -34,6 +34,10 @@
 (require 'project)
 (require 'cl-lib)
 (require 'imenu)
+;; `xref-backend-apropos' (used by `claude-code-ide-mcp-xref-find-apropos')
+;; calls `apropos-parse-pattern', which is only autoloaded once `apropos' is
+;; loaded; require it so the tool works in a fresh session.
+(require 'apropos)
 
 ;; Tree-sitter declarations
 (declare-function treesit-node-at "treesit" (pos &optional parser-or-lang named))
