@@ -22,6 +22,21 @@ This package integrates Claude Code CLI with Emacs via WebSocket and the Model C
 - `claude-code-ide-debug.el` - Debug logging utilities
 - `claude-code-ide-tests.el` - ERT test suite with mocks
 
+## Coordinate conventions
+
+The IDE wire protocol (VS Code / LSP) is **zero-based** for both line and
+character: the first character of a file is line 0, character 0.  Anything
+sent as an LSP `Position`/`Range` must be zero-based — this covers the
+`selection_changed` payload (`claude-code-ide-mcp--point->lsp-position` is
+the single conversion point), the `at_mentioned` `lineStart`/`lineEnd`, and
+flycheck/flymake diagnostics.  Emacs is one-based for lines
+(`line-number-at-pos`) and zero-based for columns (`current-column`), so
+lines get a `1-` on the way out and columns do not.
+
+The **human-facing** `@file#Lstart-Lend` mention string stays one-based
+(GitHub-style line numbers).  Do not "correct" the zero-based payloads to
+match it — the two surfaces intentionally differ.
+
 ## Hooks
 
 This project uses Claude Code hooks to automatically maintain code quality. The hooks are configured in `.claude/settings.json` and include:
