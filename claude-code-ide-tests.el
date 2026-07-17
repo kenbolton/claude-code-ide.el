@@ -1248,8 +1248,14 @@ have completed before cleanup.  Waits up to 5 seconds."
                                                      (should-not (assq 'isEmpty selection))
                                                      (let ((start (alist-get 'start selection))
                                                            (end (alist-get 'end selection)))
-                                                       (should (= (alist-get 'line start) 1))  ; 1-based
-                                                       (should (= (alist-get 'line end) 3)))))))  ; 1-based
+                                                       ;; Zero-based, per the IDE (VS Code / LSP) protocol:
+                                                       ;; the region spans the first two whole lines, so it
+                                                       ;; starts at line 0, char 0 and ends at the start of
+                                                       ;; line 2 (the third line).
+                                                       (should (= (alist-get 'line start) 0))
+                                                       (should (= (alist-get 'character start) 0))
+                                                       (should (= (alist-get 'line end) 2))
+                                                       (should (= (alist-get 'character end) 0)))))))
 
   ;; Test without selection
   (claude-code-ide-mcp-tests--with-temp-buffer "Test"
