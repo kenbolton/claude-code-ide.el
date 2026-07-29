@@ -144,9 +144,10 @@ Returns a list of formatted symbol strings."
       (cond
        ;; Skip if item is just a string (header/annotation in LSP imenu)
        ((stringp item) nil)
-       ;; Skip special entries starting with *
+       ;; Skip special entries starting with * (top level only: *Rescan* and friends)
        ((and (consp item) (stringp (car item))
-             (string-match-p "^\\*" (car item)))
+             (string-match-p "^\\*" (car item))
+             (string-empty-p prefix))
         nil)
        ;; Handle sublists (categories/namespaces) - use imenu--subalist-p
        ((imenu--subalist-p item)
@@ -157,23 +158,13 @@ Returns a list of formatted symbol strings."
           (setq results (nconc (claude-code-ide-mcp-imenu--process-items
                                 (cdr item) file-path new-prefix)
                                results))))
-       ;; Handle entries with markers
-       ((and (consp item) (markerp (cdr item)))
-        (let ((line (line-number-at-pos (marker-position (cdr item))))
-              (name (if (string-empty-p prefix)
-                        (car item)
-                      (concat prefix " " (car item)))))
-          (push (format "%s:%d: %s"
-                        file-path
-                        line
-                        name)
-                results)))
-       ;; Handle entries with position numbers
-       ((and (consp item) (numberp (cdr item)))
-        (let ((line (line-number-at-pos (cdr item)))
-              (name (if (string-empty-p prefix)
-                        (car item)
-                      (concat prefix " " (car item)))))
+       ;; Handle entries with markers or position numbers
+       ((and (consp item) (or (markerp (cdr item)) (numberp (cdr item))))
+        (let* ((pos (if (markerp (cdr item)) (marker-position (cdr item)) (cdr item)))
+               (line (line-number-at-pos pos))
+               (name (if (string-empty-p prefix)
+                         (car item)
+                       (concat prefix " " (car item)))))
           (push (format "%s:%d: %s"
                         file-path
                         line
