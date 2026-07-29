@@ -433,7 +433,9 @@ ARGUMENTS should contain:
                      old-file-path new-file-contents tab-name))
            (buffer-A (car buffers))
            (buffer-B (cdr buffers))
-           (file-exists (file-exists-p old-file-path)))
+           (file-exists (file-exists-p old-file-path))
+           (original-read-only (and buffer-A
+                                    (buffer-local-value 'buffer-read-only buffer-A))))
 
       ;; Store diff session info with session reference
       (let ((active-diffs (claude-code-ide-mcp--get-active-diffs session)))
@@ -443,6 +445,7 @@ ARGUMENTS should contain:
                    (old-file-path . ,old-file-path)
                    (new-file-path . ,new-file-path)
                    (file-exists . ,file-exists)
+                   (original-read-only . ,original-read-only)
                    (saved-winconf . ,saved-winconf)
                    (session . ,session)  ; Store the session reference
                    (created-at . ,(current-time)))
@@ -512,7 +515,8 @@ session."
       (unless temp-session
         (setq temp-session (alist-get 'session diff-info)))
       ;; Process the diff
-      (let* ((buffer-B (alist-get 'buffer-B diff-info))
+      (let* ((buffer-A (alist-get 'buffer-A diff-info))
+             (buffer-B (alist-get 'buffer-B diff-info))
              (final-session (or temp-session
                                 (claude-code-ide-mcp--get-current-session))))
 
@@ -560,7 +564,15 @@ session."
                                      (let ((session-diffs (claude-code-ide-mcp--get-active-diffs final-session)))
                                        (puthash tab-name
                                                 (cons '(responded . t) diff-info)
-                                                session-diffs)))))))))))
+                                                session-diffs))))
+
+                                 ;; Restore buffer-A's read-only state.  Our custom
+                                 ;; quit handling bypasses ediff's own restoration, and
+                                 ;; a buffer the user keeps read-only must stay so.
+                                 (when (and buffer-A (buffer-live-p buffer-A))
+                                   (with-current-buffer buffer-A
+                                     (setq buffer-read-only
+                                           (alist-get 'original-read-only diff-info)))))))))))
 
 (defun claude-code-ide-mcp--cleanup-diff (tab-name &optional session)
   "Clean up diff session for TAB-NAME.
@@ -574,6 +586,7 @@ SESSION is the MCP session to use - if not provided, tries to determine it."
             (buffer-B (alist-get 'buffer-B diff-info))
             (control-buf (alist-get 'control-buffer diff-info))
             (file-exists (alist-get 'file-exists diff-info))
+            (original-read-only (alist-get 'original-read-only diff-info))
             ;; First try to get buffers from diff-info (stored during close_tab)
             (error-buffer (alist-get 'error-buffer diff-info))
             (diff-buffer (alist-get 'diff-buffer diff-info))
@@ -602,6 +615,10 @@ SESSION is the MCP session to use - if not provided, tries to determine it."
         ;; Kill the temporary buffer (buffer B)
         (when (and buffer-B (buffer-live-p buffer-B))
           (kill-buffer buffer-B))
+        ;; Restore buffer-A's recorded read-only state for existing files
+        (when (and buffer-A (buffer-live-p buffer-A) file-exists)
+          (with-current-buffer buffer-A
+            (setq buffer-read-only original-read-only)))
         ;; Kill buffer A only if it was created for a new file
         (when (and buffer-A (buffer-live-p buffer-A) (not file-exists))
           ;; This is a *New file: buffer that we created
@@ -623,7 +640,7 @@ SESSION is the MCP session to use - if not provided, tries to determine it."
       ;; Fallback to project directory if no current session
       (when-let* ((project-dir (claude-code-ide-mcp--get-buffer-project)))
         (when-let* ((session (claude-code-ide-mcp--get-session-for-project
-                             project-dir)))
+                              project-dir)))
           (let ((session-diffs (claude-code-ide-mcp-session-active-diffs session)))
             (maphash (lambda (tab-name _diff-info)
                        (claude-code-ide-mcp--cleanup-diff tab-name session)
