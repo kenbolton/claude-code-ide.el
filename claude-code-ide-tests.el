@@ -1570,6 +1570,10 @@ with an explanatory error rather than operating on the dead buffer."
   (should (= (claude-code-ide-diagnostics--severity-to-vscode 'warning) 2))
   (should (= (claude-code-ide-diagnostics--severity-to-vscode 'info) 3))
   (should (= (claude-code-ide-diagnostics--severity-to-vscode 'hint) 4))
+  ;; Eglot severities
+  (should (= (claude-code-ide-diagnostics--severity-to-vscode 'eglot-error) 1))
+  (should (= (claude-code-ide-diagnostics--severity-to-vscode 'eglot-warning) 2))
+  (should (= (claude-code-ide-diagnostics--severity-to-vscode 'eglot-note) 3))
   ;; Test default fallback
   (should (= (claude-code-ide-diagnostics--severity-to-vscode 'unknown) 3)))
 
@@ -1581,6 +1585,10 @@ with an explanatory error rather than operating on the dead buffer."
   (should (equal (claude-code-ide-diagnostics--severity-to-string 'warning) "Warning"))
   (should (equal (claude-code-ide-diagnostics--severity-to-string 'info) "Information"))
   (should (equal (claude-code-ide-diagnostics--severity-to-string 'hint) "Hint"))
+  ;; Eglot severities, which wrap the flymake types with an eglot- prefix
+  (should (equal (claude-code-ide-diagnostics--severity-to-string 'eglot-error) "Error"))
+  (should (equal (claude-code-ide-diagnostics--severity-to-string 'eglot-warning) "Warning"))
+  (should (equal (claude-code-ide-diagnostics--severity-to-string 'eglot-note) "Information"))
   ;; Test default fallback
   (should (equal (claude-code-ide-diagnostics--severity-to-string 'unknown) "Information")))
 
