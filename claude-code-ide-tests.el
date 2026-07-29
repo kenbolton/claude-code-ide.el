@@ -1962,6 +1962,86 @@ closes."
          (when (file-exists-p test-file) (delete-file test-file))
          (remhash default-directory claude-code-ide-mcp--sessions))))))
 
+(ert-deftest claude-code-ide-test-ediff-quit-restores-read-only ()
+  "Test that the deferred ediff quit handler restores buffer-A's read-only state.
+`claude-code-ide-mcp--handle-ediff-quit' runs its restore inside a deferred
+timer closure; it must apply the recorded `original-read-only' value
+instead of assuming a fixed state, so a deliberately locked buffer stays
+locked and a buffer that was writable before ediff stays writable."
+  (claude-code-ide-tests--with-temp-directory
+   (lambda ()
+     (let ((session (make-claude-code-ide-mcp-session
+                     :project-dir default-directory
+                     :active-diffs (make-hash-table :test 'equal)
+                     :deferred (make-hash-table :test 'equal))))
+       (puthash default-directory session claude-code-ide-mcp--sessions)
+       (unwind-protect
+           (cl-letf (((symbol-function 'run-with-idle-timer)
+                      (lambda (_secs _repeat fn &rest args) (apply fn args) nil))
+                     ((symbol-function 'y-or-n-p)
+                      (lambda (&rest _) t)))
+             ;; A file the operator kept read-only must stay read-only.
+             (let* ((test-file (expand-file-name "test-quit-keep.txt" default-directory))
+                    (buffer-B (generate-new-buffer "*test-quit-keep-modified*"))
+                    buffer-A)
+               (unwind-protect
+                   (progn
+                     (with-temp-file test-file (insert "Original"))
+                     (setq buffer-A (find-file-noselect test-file))
+                     (with-current-buffer buffer-B (insert "Modified"))
+                     (with-current-buffer buffer-A (setq buffer-read-only t))
+                     (puthash "test-quit-keep"
+                              `((buffer-A . ,buffer-A)
+                                (buffer-B . ,buffer-B)
+                                (old-file-path . ,test-file)
+                                (new-file-path . ,test-file)
+                                (file-exists . t)
+                                (original-read-only . t)
+                                (session . ,session))
+                              (claude-code-ide-mcp-session-active-diffs session))
+                     (claude-code-ide-mcp--handle-ediff-quit "test-quit-keep" session)
+                     (should (buffer-live-p buffer-A))
+                     (should (buffer-local-value 'buffer-read-only buffer-A)))
+                 (when (and buffer-A (buffer-live-p buffer-A))
+                   (with-current-buffer buffer-A
+                     (setq buffer-read-only nil)
+                     (set-buffer-modified-p nil))
+                   (kill-buffer buffer-A))
+                 (when (buffer-live-p buffer-B) (kill-buffer buffer-B))
+                 (when (file-exists-p test-file) (delete-file test-file))))
+             ;; A buffer that was writable before ediff must stay writable.
+             (let* ((test-file (expand-file-name "test-quit-clear.txt" default-directory))
+                    (buffer-B (generate-new-buffer "*test-quit-clear-modified*"))
+                    buffer-A)
+               (unwind-protect
+                   (progn
+                     (with-temp-file test-file (insert "Original"))
+                     (setq buffer-A (find-file-noselect test-file))
+                     (with-current-buffer buffer-B (insert "Modified"))
+                     ;; ediff sets the buffer read-only during the session even
+                     ;; though it started out writable.
+                     (with-current-buffer buffer-A (setq buffer-read-only t))
+                     (puthash "test-quit-clear"
+                              `((buffer-A . ,buffer-A)
+                                (buffer-B . ,buffer-B)
+                                (old-file-path . ,test-file)
+                                (new-file-path . ,test-file)
+                                (file-exists . t)
+                                (original-read-only . nil)
+                                (session . ,session))
+                              (claude-code-ide-mcp-session-active-diffs session))
+                     (claude-code-ide-mcp--handle-ediff-quit "test-quit-clear" session)
+                     (should (buffer-live-p buffer-A))
+                     (should-not (buffer-local-value 'buffer-read-only buffer-A)))
+                 (when (and buffer-A (buffer-live-p buffer-A))
+                   (with-current-buffer buffer-A
+                     (setq buffer-read-only nil)
+                     (set-buffer-modified-p nil))
+                   (kill-buffer buffer-A))
+                 (when (buffer-live-p buffer-B) (kill-buffer buffer-B))
+                 (when (file-exists-p test-file) (delete-file test-file)))))
+         (remhash default-directory claude-code-ide-mcp--sessions))))))
+
 (ert-deftest test-claude-code-ide-mcp-multi-session-deferred ()
   "Test that deferred responses work correctly with multiple sessions."
   (skip-unless (not (getenv "CI")))

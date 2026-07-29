@@ -515,7 +515,8 @@ session."
       (unless temp-session
         (setq temp-session (alist-get 'session diff-info)))
       ;; Process the diff
-      (let* ((buffer-B (alist-get 'buffer-B diff-info))
+      (let* ((buffer-A (alist-get 'buffer-A diff-info))
+             (buffer-B (alist-get 'buffer-B diff-info))
              (final-session (or temp-session
                                 (claude-code-ide-mcp--get-current-session))))
 
