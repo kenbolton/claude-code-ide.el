@@ -101,6 +101,14 @@ Returns: 1 (Error), 2 (Warning), 3 (Information), 4 (Hint)."
     ;; Default
     (_ "Information")))
 
+(defun claude-code-ide-diagnostics--source-name (source fallback)
+  "Return SOURCE as a string, or FALLBACK when SOURCE is not usable.
+SOURCE is a flycheck checker or a flymake backend.  A flymake backend can
+be a closure rather than a symbol, so `symbol-name' is not safe here."
+  (cond ((stringp source) source)
+        ((and source (symbolp source)) (symbol-name source))
+        (t fallback)))
+
 (defun claude-code-ide-diagnostics--get-flycheck-diagnostics (buffer)
   "Get Flycheck diagnostics for BUFFER in VS Code format.
 Positions are zero-based for both line and character, matching the VS
@@ -120,10 +128,8 @@ columns, so both are decremented here."
                                         (character . ,(if end-col (1- end-col) 0))))))
                       (severity . ,(claude-code-ide-diagnostics--severity-to-string
                                     (flycheck-error-level err)))
-                      (source . ,(let ((c (flycheck-error-checker err)))
-                                   (cond ((symbolp c) (if c (symbol-name c) "flycheck"))
-                                         ((stringp c) c)
-                                         (t "flycheck"))))
+                      (source . ,(claude-code-ide-diagnostics--source-name
+                                  (flycheck-error-checker err) "flycheck"))
                       (message . ,(flycheck-error-message err)))))
                 flycheck-current-errors)))))
 
@@ -151,10 +157,8 @@ line is decremented; `current-column' is already zero-based."
                                           (character . ,end-col)))))
                         (severity . ,(claude-code-ide-diagnostics--severity-to-string
                                       (flymake-diagnostic-type diag)))
-                        (source . ,(let ((b (or (flymake-diagnostic-backend diag) 'flymake)))
-                                     (cond ((symbolp b) (symbol-name b))
-                                           ((stringp b) b)
-                                           (t "flymake"))))
+                        (source . ,(claude-code-ide-diagnostics--source-name
+                                    (flymake-diagnostic-backend diag) "flymake"))
                         (message . ,(flymake-diagnostic-text diag))))))
                 (flymake-diagnostics))))))
 

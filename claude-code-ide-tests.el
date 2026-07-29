@@ -1584,6 +1584,21 @@ with an explanatory error rather than operating on the dead buffer."
   ;; Test default fallback
   (should (equal (claude-code-ide-diagnostics--severity-to-string 'unknown) "Information")))
 
+(ert-deftest claude-code-ide-test-diagnostics-source-name ()
+  "Test that diagnostic source values normalize to strings.
+A flymake backend can be a closure, which `symbol-name' cannot accept."
+  (require 'claude-code-ide-diagnostics)
+  ;; A symbol checker becomes its name.
+  (should (equal (claude-code-ide-diagnostics--source-name 'lsp "flycheck") "lsp"))
+  ;; A string passes through unchanged.
+  (should (equal (claude-code-ide-diagnostics--source-name "eglot" "flymake") "eglot"))
+  ;; nil takes the fallback.
+  (should (equal (claude-code-ide-diagnostics--source-name nil "flycheck") "flycheck"))
+  ;; A closure takes the fallback instead of raising wrong-type-argument.
+  (should (equal (claude-code-ide-diagnostics--source-name
+                  (lambda (_report-fn) nil) "flymake")
+                 "flymake")))
+
 (ert-deftest claude-code-ide-test-diagnostics-handler ()
   "Test getDiagnostics handler."
   (require 'claude-code-ide-diagnostics)
