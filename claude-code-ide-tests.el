@@ -2324,6 +2324,51 @@ with an explanatory error rather than operating on the dead buffer."
       (delete-file test-file)
       (claude-code-ide-mcp-server-unregister-session session-id))))
 
+(ert-deftest claude-code-ide-emacs-tools-test-imenu-deep-nesting ()
+  "Test that imenu-list-symbols unpacks categories nested three levels deep.
+The index is built by hand so the test needs no major mode or language
+server, and therefore runs in batch mode."
+  (require 'claude-code-ide-emacs-tools)
+  (let ((test-file (make-temp-file "test-imenu-deep-" nil ".txt"))
+        (session-id "test-session-imenu-deep")
+        (project-dir (temporary-file-directory)))
+    (unwind-protect
+        (progn
+          ;; Five short lines: positions 1-6 are line 1, 7-12 line 2, 13-18 line 3.
+          (with-temp-file test-file
+            (insert "line1\nline2\nline3\nline4\nline5\n"))
+          (claude-code-ide-mcp-server-register-session session-id project-dir nil)
+          (let ((claude-code-ide-mcp-server--current-session-id session-id)
+                (buffer (find-file-noselect test-file)))
+            (unwind-protect
+                (progn
+                  (with-current-buffer buffer
+                    (setq-local imenu--index-alist nil)
+                    (setq-local imenu-create-index-function
+                                (lambda ()
+                                  (list (cons "Outer"
+                                              (list (cons "Inner"
+                                                          (list (cons "leaf-deep" 1)))
+                                                    (cons "mid-leaf" 7)))
+                                        (cons "top-leaf" 13)))))
+                  (let ((result (claude-code-ide-mcp-imenu-list-symbols test-file)))
+                    (should (listp result))
+                    ;; The depth-three leaf survives, carrying its full category path.
+                    (should (cl-find-if
+                             (lambda (s) (string-match-p "Outer:Inner leaf-deep\\'" s))
+                             result))
+                    ;; The depth-two leaf carries its single category.
+                    (should (cl-find-if
+                             (lambda (s) (string-match-p "Outer mid-leaf\\'" s))
+                             result))
+                    ;; The top-level leaf carries no category prefix.
+                    (should (cl-find-if
+                             (lambda (s) (string-match-p ": top-leaf\\'" s))
+                             result))))
+              (kill-buffer buffer))))
+      (delete-file test-file)
+      (claude-code-ide-mcp-server-unregister-session session-id))))
+
 (ert-deftest claude-code-ide-test-tool-format-backward-compatibility ()
   "Test that both old and new tool formats work correctly."
   (require 'claude-code-ide-mcp-server)
