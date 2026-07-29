@@ -963,6 +963,37 @@ keeps this test focused on the confirmation path."
         (kill-buffer buffer))
       (claude-code-ide-tests--clear-processes))))
 
+(ert-deftest claude-code-ide-test-stop-all-confirmed ()
+  "Test that confirming `stop-all' kills the session and counts it.
+This exercises the functional core of the command that the declined test
+leaves untouched: the `dolist', the `kill-buffer', and the `stopped'
+counter.  Dead process pruning is stubbed out so the fake process entry
+survives, which keeps this test focused on the confirm-and-kill path."
+  (claude-code-ide-tests--clear-processes)
+  (let ((buffer nil)
+        (logged-message nil))
+    (unwind-protect
+        (let* ((directory (file-name-as-directory
+                           (expand-file-name "stop-all-confirmed"
+                                             (temporary-file-directory))))
+               (buffer-name (claude-code-ide-session-buffer-name directory)))
+          (setq buffer (get-buffer-create buffer-name))
+          (puthash directory 'fake-process claude-code-ide--processes)
+          (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
+                    ((symbol-function 'claude-code-ide-cleanup-dead-sessions)
+                     (lambda () nil))
+                    ((symbol-function 'claude-code-ide-log)
+                     (lambda (format-string &rest args)
+                       (setq logged-message (apply #'format format-string args)))))
+            (claude-code-ide-stop-all))
+          ;; Confirming killed the session buffer.
+          (should-not (buffer-live-p buffer))
+          ;; The stopped count was reflected in the final log message.
+          (should (equal logged-message "Stopped 1 Claude Code session")))
+      (when (and buffer (buffer-live-p buffer))
+        (kill-buffer buffer))
+      (claude-code-ide-tests--clear-processes))))
+
 (ert-deftest claude-code-ide-test-switch-to-buffer-no-session ()
   "Test `switch-to-buffer' command when no session exists."
   (claude-code-ide-tests--clear-processes)
@@ -1887,6 +1918,76 @@ keeps this test focused on the confirmation path."
            (when (file-exists-p file1) (delete-file file1))
            (when (file-exists-p file2) (delete-file file2))
            ;; Remove session from global hash table
+           (remhash default-directory claude-code-ide-mcp--sessions)))))))
+
+(ert-deftest claude-code-ide-test-opendiff-records-original-read-only ()
+  "Test that `handle-open-diff' records buffer-A's pre-ediff read-only state.
+This is the producer side of the read-only restore feature: every other
+read-only test builds diff-info by hand with `puthash'; this one reads
+back what `claude-code-ide-mcp-handle-open-diff' actually captured, for
+both a writable buffer-A and one the operator already kept read-only."
+  (claude-code-ide-tests--with-temp-directory
+   (lambda ()
+     (let* ((session (make-claude-code-ide-mcp-session
+                      :project-dir default-directory
+                      :active-diffs (make-hash-table :test 'equal)))
+            (active-diffs (claude-code-ide-mcp-session-active-diffs session))
+            (writable-file (expand-file-name "test-writable.txt" default-directory))
+            (locked-file (expand-file-name "test-locked.txt" default-directory))
+            writable-buffer-A
+            locked-buffer-A)
+       (puthash default-directory session claude-code-ide-mcp--sessions)
+       (with-temp-file writable-file (insert "Original content"))
+       (with-temp-file locked-file (insert "Original content"))
+       (make-directory (expand-file-name ".git" default-directory) t)
+       (cl-letf (((symbol-function 'ediff-buffers)
+                  ;; Mimic ediff's own behavior of locking buffer-A during
+                  ;; the session, so this stub cannot mask a capture that
+                  ;; happens too late -- if the capture moved to after this
+                  ;; call, it would see this imposed t instead of the
+                  ;; buffer's real pre-ediff state.
+                  (lambda (buf-A _buf-B)
+                    (with-current-buffer buf-A (setq buffer-read-only t))
+                    nil))
+                 ((symbol-function 'claude-code-ide-mcp--get-current-session)
+                  (lambda () session)))
+         (unwind-protect
+             (progn
+               ;; A writable file: the capture must record nil.
+               (claude-code-ide-mcp-handle-open-diff
+                `((old_file_path . ,writable-file)
+                  (new_file_path . ,writable-file)
+                  (new_file_contents . "Modified content")
+                  (tab_name . "diff-writable")))
+               (setq writable-buffer-A
+                     (alist-get 'buffer-A (gethash "diff-writable" active-diffs)))
+               (should-not (alist-get 'original-read-only
+                                      (gethash "diff-writable" active-diffs)))
+
+               ;; A file the operator already kept read-only: capture must record t.
+               (setq locked-buffer-A (find-file-noselect locked-file))
+               (with-current-buffer locked-buffer-A (setq buffer-read-only t))
+               (claude-code-ide-mcp-handle-open-diff
+                `((old_file_path . ,locked-file)
+                  (new_file_path . ,locked-file)
+                  (new_file_contents . "Modified content")
+                  (tab_name . "diff-locked")))
+               (should (alist-get 'original-read-only
+                                  (gethash "diff-locked" active-diffs))))
+           ;; Cleanup - still inside the stubs' dynamic extent
+           (claude-code-ide-mcp-handle-close-all-diff-tabs nil)
+           (when (and writable-buffer-A (buffer-live-p writable-buffer-A))
+             (with-current-buffer writable-buffer-A
+               (setq buffer-read-only nil)
+               (set-buffer-modified-p nil))
+             (kill-buffer writable-buffer-A))
+           (when (and locked-buffer-A (buffer-live-p locked-buffer-A))
+             (with-current-buffer locked-buffer-A
+               (setq buffer-read-only nil)
+               (set-buffer-modified-p nil))
+             (kill-buffer locked-buffer-A))
+           (when (file-exists-p writable-file) (delete-file writable-file))
+           (when (file-exists-p locked-file) (delete-file locked-file))
            (remhash default-directory claude-code-ide-mcp--sessions)))))))
 
 (ert-deftest claude-code-ide-test-ediff-restores-buffer-read-only ()
