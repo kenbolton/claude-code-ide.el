@@ -1570,6 +1570,10 @@ with an explanatory error rather than operating on the dead buffer."
   (should (= (claude-code-ide-diagnostics--severity-to-vscode 'warning) 2))
   (should (= (claude-code-ide-diagnostics--severity-to-vscode 'info) 3))
   (should (= (claude-code-ide-diagnostics--severity-to-vscode 'hint) 4))
+  ;; Eglot severities
+  (should (= (claude-code-ide-diagnostics--severity-to-vscode 'eglot-error) 1))
+  (should (= (claude-code-ide-diagnostics--severity-to-vscode 'eglot-warning) 2))
+  (should (= (claude-code-ide-diagnostics--severity-to-vscode 'eglot-note) 3))
   ;; Test default fallback
   (should (= (claude-code-ide-diagnostics--severity-to-vscode 'unknown) 3)))
 
@@ -1581,8 +1585,27 @@ with an explanatory error rather than operating on the dead buffer."
   (should (equal (claude-code-ide-diagnostics--severity-to-string 'warning) "Warning"))
   (should (equal (claude-code-ide-diagnostics--severity-to-string 'info) "Information"))
   (should (equal (claude-code-ide-diagnostics--severity-to-string 'hint) "Hint"))
+  ;; Eglot severities, which wrap the flymake types with an eglot- prefix
+  (should (equal (claude-code-ide-diagnostics--severity-to-string 'eglot-error) "Error"))
+  (should (equal (claude-code-ide-diagnostics--severity-to-string 'eglot-warning) "Warning"))
+  (should (equal (claude-code-ide-diagnostics--severity-to-string 'eglot-note) "Information"))
   ;; Test default fallback
   (should (equal (claude-code-ide-diagnostics--severity-to-string 'unknown) "Information")))
+
+(ert-deftest claude-code-ide-test-diagnostics-source-name ()
+  "Test that diagnostic source values normalize to strings.
+A flymake backend can be a closure, which `symbol-name' cannot accept."
+  (require 'claude-code-ide-diagnostics)
+  ;; A symbol checker becomes its name.
+  (should (equal (claude-code-ide-diagnostics--source-name 'lsp "flycheck") "lsp"))
+  ;; A string passes through unchanged.
+  (should (equal (claude-code-ide-diagnostics--source-name "eglot" "flymake") "eglot"))
+  ;; nil takes the fallback.
+  (should (equal (claude-code-ide-diagnostics--source-name nil "flycheck") "flycheck"))
+  ;; A closure takes the fallback instead of raising wrong-type-argument.
+  (should (equal (claude-code-ide-diagnostics--source-name
+                  (lambda (_report-fn) nil) "flymake")
+                 "flymake")))
 
 (ert-deftest claude-code-ide-test-diagnostics-handler ()
   "Test getDiagnostics handler."
@@ -2321,6 +2344,84 @@ with an explanatory error rather than operating on the dead buffer."
                (should (string-match "Error" (error-message-string err)))))))
 
       ;; Cleanup
+      (delete-file test-file)
+      (claude-code-ide-mcp-server-unregister-session session-id))))
+
+(ert-deftest claude-code-ide-emacs-tools-test-imenu-deep-nesting ()
+  "Test that imenu-list-symbols unpacks categories nested three levels deep.
+The index is built by hand so the test needs no major mode or language
+server, and therefore runs in batch mode."
+  (require 'claude-code-ide-emacs-tools)
+  (let ((test-file (make-temp-file "test-imenu-deep-" nil ".txt"))
+        (session-id "test-session-imenu-deep")
+        (project-dir (temporary-file-directory)))
+    (unwind-protect
+        (progn
+          ;; Five short lines: positions 1-6 are line 1, 7-12 line 2, 13-18 line 3.
+          (with-temp-file test-file
+            (insert "line1\nline2\nline3\nline4\nline5\n"))
+          (claude-code-ide-mcp-server-register-session session-id project-dir nil)
+          (let ((claude-code-ide-mcp-server--current-session-id session-id)
+                (buffer (find-file-noselect test-file)))
+            (unwind-protect
+                (progn
+                  (with-current-buffer buffer
+                    (setq-local imenu--index-alist nil)
+                    (setq-local imenu-create-index-function
+                                (lambda ()
+                                  (list (cons "Outer"
+                                              (list (cons "Inner"
+                                                          (list (cons "leaf-deep" 1)))
+                                                    (cons "mid-leaf" 7)))
+                                        (cons "top-leaf" 13)))))
+                  (let ((result (claude-code-ide-mcp-imenu-list-symbols test-file)))
+                    (should (listp result))
+                    ;; The depth-three leaf survives, carrying its full category path.
+                    (should (cl-find-if
+                             (lambda (s) (string-match-p "Outer:Inner leaf-deep\\'" s))
+                             result))
+                    ;; The depth-two leaf carries its single category.
+                    (should (cl-find-if
+                             (lambda (s) (string-match-p "Outer mid-leaf\\'" s))
+                             result))
+                    ;; The top-level leaf carries no category prefix.
+                    (should (cl-find-if
+                             (lambda (s) (string-match-p ": top-leaf\\'" s))
+                             result))))
+              (kill-buffer buffer))))
+      (delete-file test-file)
+      (claude-code-ide-mcp-server-unregister-session session-id))))
+
+(ert-deftest claude-code-ide-emacs-tools-test-imenu-nested-star-entry-survives ()
+  "Test that a nested `*...*'-named imenu entry keeps its own location.
+Python's imenu index nests a `*class definition*' marker under the class's
+own category, carrying the class's own line number.  The `*'-prefix skip
+guard must apply only at the top level (where imenu puts entries such as
+`*Rescan*'), not at every recursion depth, or this entry is silently
+dropped and the class never appears with a location of its own."
+  (require 'claude-code-ide-emacs-tools)
+  (let ((test-file (make-temp-file "test-imenu-class-def-" nil ".py"))
+        (session-id "test-session-imenu-class-def")
+        (project-dir (temporary-file-directory)))
+    (unwind-protect
+        (progn
+          (with-temp-file test-file
+            (insert "class TestClass:\n"
+                    "    def method1(self):\n"
+                    "        pass\n\n"
+                    "    def method2(self, arg):\n"
+                    "        return arg * 2\n\n"
+                    "def standalone_function():\n"
+                    "    return 42\n"))
+          (claude-code-ide-mcp-server-register-session session-id project-dir nil)
+          (let ((claude-code-ide-mcp-server--current-session-id session-id))
+            (let ((result (claude-code-ide-mcp-imenu-list-symbols test-file)))
+              (should (listp result))
+              ;; The class's own definition line survives, nested under its
+              ;; own category rather than dropped by the star-entry guard.
+              (should (cl-find-if
+                       (lambda (s) (string-match-p "TestClass (class) \\*class definition\\*\\'" s))
+                       result)))))
       (delete-file test-file)
       (claude-code-ide-mcp-server-unregister-session session-id))))
 
