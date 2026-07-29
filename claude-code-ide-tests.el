@@ -1915,6 +1915,53 @@ with an explanatory error rather than operating on the dead buffer."
          (when (file-exists-p test-file) (delete-file test-file))
          (remhash default-directory claude-code-ide-mcp--sessions))))))
 
+(ert-deftest claude-code-ide-test-ediff-keeps-deliberate-read-only ()
+  "Test that cleanup restores read-only rather than always clearing it.
+A file the operator keeps read-only must stay read-only after the diff
+closes."
+  (claude-code-ide-tests--with-temp-directory
+   (lambda ()
+     (let* ((session (make-claude-code-ide-mcp-session
+                      :project-dir default-directory
+                      :active-diffs (make-hash-table :test 'equal)))
+            (test-file (expand-file-name "test-keep-readonly.txt" default-directory))
+            (buffer-A nil)
+            (buffer-B nil))
+       (puthash default-directory session claude-code-ide-mcp--sessions)
+       (with-temp-file test-file (insert "Original content"))
+       (setq buffer-A (find-file-noselect test-file))
+       (setq buffer-B (generate-new-buffer "*test-modified-keep*"))
+       (with-current-buffer buffer-B (insert "Modified content"))
+       (make-directory (expand-file-name ".git" default-directory) t)
+       (unwind-protect
+           (progn
+             ;; ediff also sets the buffer read-only, so the recorded value is
+             ;; what distinguishes a deliberate lock from ediff's own.
+             (with-current-buffer buffer-A (setq buffer-read-only t))
+             (let ((active-diffs (claude-code-ide-mcp-session-active-diffs session)))
+               (puthash "test-diff-keep"
+                        `((buffer-A . ,buffer-A)
+                          (buffer-B . ,buffer-B)
+                          (old-file-path . ,test-file)
+                          (new-file-path . ,test-file)
+                          (file-exists . t)
+                          (original-read-only . t)
+                          (session . ,session))
+                        active-diffs))
+             (claude-code-ide-mcp--cleanup-diff "test-diff-keep" session)
+             (should (buffer-live-p buffer-A))
+             ;; The recorded state wins: the buffer stays read-only.
+             (should (buffer-local-value 'buffer-read-only buffer-A)))
+         (when (and buffer-A (buffer-live-p buffer-A))
+           (with-current-buffer buffer-A
+             (setq buffer-read-only nil)
+             (set-buffer-modified-p nil))
+           (kill-buffer buffer-A))
+         (when (and buffer-B (buffer-live-p buffer-B))
+           (kill-buffer buffer-B))
+         (when (file-exists-p test-file) (delete-file test-file))
+         (remhash default-directory claude-code-ide-mcp--sessions))))))
+
 (ert-deftest test-claude-code-ide-mcp-multi-session-deferred ()
   "Test that deferred responses work correctly with multiple sessions."
   (skip-unless (not (getenv "CI")))
