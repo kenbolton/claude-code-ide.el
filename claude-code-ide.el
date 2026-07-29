@@ -1285,7 +1285,7 @@ conversation in the current directory."
   (interactive)
   (let* ((working-dir (claude-code-ide--get-working-directory))
          (buffer-name (claude-code-ide--get-buffer-name)))
-    (if-let ((buffer (get-buffer buffer-name)))
+    (if-let* ((buffer (get-buffer buffer-name)))
         (progn
           ;; Kill the buffer (cleanup will be handled by hooks)
           ;; The process sentinel will handle cleanup when the process dies
@@ -1298,26 +1298,26 @@ conversation in the current directory."
 (defun claude-code-ide-stop-all ()
   "Stop all active Claude Code sessions after confirmation."
   (interactive)
-  (claude-code-ide--cleanup-dead-processes)
-  (let ((session-count (hash-table-count claude-code-ide--processes)))
-    (if (zerop session-count)
+  (claude-code-ide-cleanup-dead-sessions)
+  (let* ((directories (claude-code-ide-session-directories))
+         (count (length directories)))
+    (if (zerop count)
         (claude-code-ide-log "No active Claude Code sessions")
       (when (yes-or-no-p (format "Stop all %d Claude Code session%s? "
-                                 session-count
-                                 (if (= session-count 1) "" "s")))
-        (let ((buffers-to-kill nil))
-          (maphash (lambda (directory _process)
-                     (let* ((buffer-name (funcall claude-code-ide-buffer-name-function directory))
-                            (buffer (get-buffer buffer-name)))
-                       (when (and buffer (buffer-live-p buffer))
-                         (push buffer buffers-to-kill))))
-                   claude-code-ide--processes)
-          (let ((stopped (length buffers-to-kill)))
-            (dolist (buffer buffers-to-kill)
-              (kill-buffer buffer))
-            (claude-code-ide-log "Stopped %d Claude Code session%s"
-                                 stopped
-                                 (if (= stopped 1) "" "s"))))))))
+                                 count
+                                 (if (= count 1) "" "s")))
+        (let ((stopped 0))
+          (dolist (directory directories)
+            (when-let* ((buffer (get-buffer
+                                 (claude-code-ide-session-buffer-name directory))))
+              (when (buffer-live-p buffer)
+                ;; Cleanup runs from the buffer-kill hooks, as in
+                ;; `claude-code-ide-stop'.
+                (kill-buffer buffer)
+                (setq stopped (1+ stopped)))))
+          (claude-code-ide-log "Stopped %d Claude Code session%s"
+                               stopped
+                               (if (= stopped 1) "" "s")))))))
 
 
 ;;;###autoload

@@ -937,6 +937,32 @@ with an explanatory error rather than operating on the dead buffer."
         (claude-code-ide-stop-all))
     (claude-code-ide-tests--clear-processes)))
 
+(ert-deftest claude-code-ide-test-stop-all-declined ()
+  "Test that declining the confirmation stops nothing.
+Also pins that the command finds sessions through the public API.  Dead
+process pruning is stubbed out so the fake process entry survives, which
+keeps this test focused on the confirmation path."
+  (claude-code-ide-tests--clear-processes)
+  (let ((buffer nil))
+    (unwind-protect
+        (let* ((directory (file-name-as-directory
+                           (expand-file-name "stop-all-declined"
+                                             (temporary-file-directory))))
+               (buffer-name (claude-code-ide-session-buffer-name directory)))
+          (setq buffer (get-buffer-create buffer-name))
+          (puthash directory 'fake-process claude-code-ide--processes)
+          ;; The session is reachable through the public API.
+          (should (member directory (claude-code-ide-session-directories)))
+          (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) nil))
+                    ((symbol-function 'claude-code-ide-cleanup-dead-sessions)
+                     (lambda () nil)))
+            (claude-code-ide-stop-all))
+          ;; Declining killed nothing.
+          (should (buffer-live-p buffer)))
+      (when (and buffer (buffer-live-p buffer))
+        (kill-buffer buffer))
+      (claude-code-ide-tests--clear-processes))))
+
 (ert-deftest claude-code-ide-test-switch-to-buffer-no-session ()
   "Test `switch-to-buffer' command when no session exists."
   (claude-code-ide-tests--clear-processes)
