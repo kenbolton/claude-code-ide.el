@@ -2392,6 +2392,39 @@ server, and therefore runs in batch mode."
       (delete-file test-file)
       (claude-code-ide-mcp-server-unregister-session session-id))))
 
+(ert-deftest claude-code-ide-emacs-tools-test-imenu-nested-star-entry-survives ()
+  "Test that a nested `*...*'-named imenu entry keeps its own location.
+Python's imenu index nests a `*class definition*' marker under the class's
+own category, carrying the class's own line number.  The `*'-prefix skip
+guard must apply only at the top level (where imenu puts entries such as
+`*Rescan*'), not at every recursion depth, or this entry is silently
+dropped and the class never appears with a location of its own."
+  (require 'claude-code-ide-emacs-tools)
+  (let ((test-file (make-temp-file "test-imenu-class-def-" nil ".py"))
+        (session-id "test-session-imenu-class-def")
+        (project-dir (temporary-file-directory)))
+    (unwind-protect
+        (progn
+          (with-temp-file test-file
+            (insert "class TestClass:\n"
+                    "    def method1(self):\n"
+                    "        pass\n\n"
+                    "    def method2(self, arg):\n"
+                    "        return arg * 2\n\n"
+                    "def standalone_function():\n"
+                    "    return 42\n"))
+          (claude-code-ide-mcp-server-register-session session-id project-dir nil)
+          (let ((claude-code-ide-mcp-server--current-session-id session-id))
+            (let ((result (claude-code-ide-mcp-imenu-list-symbols test-file)))
+              (should (listp result))
+              ;; The class's own definition line survives, nested under its
+              ;; own category rather than dropped by the star-entry guard.
+              (should (cl-find-if
+                       (lambda (s) (string-match-p "TestClass (class) \\*class definition\\*\\'" s))
+                       result)))))
+      (delete-file test-file)
+      (claude-code-ide-mcp-server-unregister-session session-id))))
+
 (ert-deftest claude-code-ide-test-tool-format-backward-compatibility ()
   "Test that both old and new tool formats work correctly."
   (require 'claude-code-ide-mcp-server)
