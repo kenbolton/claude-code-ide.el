@@ -568,7 +568,43 @@ register both arrows."
                 (should (equal (nreverse sent) '(down down return))))
               (setq sent '())
               (claude-code-ide-select-option-1)
-              (should (equal (nreverse sent) '(return))))
+              (should (equal (nreverse sent) '(return)))
+              (setq sent '())
+              (claude-code-ide-select-option-2)
+              (should (equal (nreverse sent) '(down return)))
+              (setq sent '())
+              (claude-code-ide-select-option-4)
+              (should (equal (nreverse sent) '(down down down return))))
+          (kill-buffer buffer))))))
+
+(ert-deftest claude-code-ide-test-send-down-ghostel-fallback ()
+  "Test that send-down falls back to a raw sequence without `ghostel-send-key'.
+Older ghostel releases lack the key encoder.  The fallback is the same
+ESC [ B that the eat backend sends."
+  (let ((ghostel-string-sent nil)
+        (claude-code-ide-terminal-backend 'ghostel))
+    (cl-letf (((symbol-function 'ghostel-send-key) nil)
+              ((symbol-function 'ghostel-send-string)
+               (lambda (str) (setq ghostel-string-sent str))))
+      (should-not (fboundp 'ghostel-send-key))
+      (claude-code-ide--terminal-send-down)
+      (should (equal ghostel-string-sent "\e[B")))))
+
+(ert-deftest claude-code-ide-test-insert-newline-sequence ()
+  "Test that insert-newline sends a backslash and then a return.
+Claude Code reads that pair as a literal newline in the prompt."
+  (let ((sent '()))
+    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda (&optional _dir) "*claude-code-test-newline*"))
+              ((symbol-function 'claude-code-ide--terminal-send-string)
+               (lambda (str) (push (list 'string str) sent)))
+              ((symbol-function 'claude-code-ide--terminal-send-return)
+               (lambda () (push 'return sent))))
+      (let ((buffer (get-buffer-create "*claude-code-test-newline*")))
+        (unwind-protect
+            (progn
+              (claude-code-ide-insert-newline)
+              (should (equal (nreverse sent) '((string "\\") return))))
           (kill-buffer buffer))))))
 
 (ert-deftest claude-code-ide-test-send-prompt-command ()
