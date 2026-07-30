@@ -463,18 +463,24 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let ((vterm-string-sent nil)
         (vterm-escape-sent nil)
         (vterm-return-sent nil)
+        (vterm-key-sent nil)
         (eat-string-sent nil)
-        (ghostel-string-sent nil))
+        (ghostel-string-sent nil)
+        (ghostel-key-sent nil))
     (cl-letf (((symbol-function 'vterm-send-string)
                (lambda (str) (setq vterm-string-sent str)))
               ((symbol-function 'vterm-send-escape)
                (lambda () (setq vterm-escape-sent t)))
               ((symbol-function 'vterm-send-return)
                (lambda () (setq vterm-return-sent t)))
+              ((symbol-function 'vterm-send-key)
+               (lambda (key &rest _) (setq vterm-key-sent key)))
               ((symbol-function 'eat-term-send-string)
                (lambda (term str) (setq eat-string-sent str)))
               ((symbol-function 'ghostel-send-string)
-               (lambda (str) (setq ghostel-string-sent str))))
+               (lambda (str) (setq ghostel-string-sent str)))
+              ((symbol-function 'ghostel-send-key)
+               (lambda (key &optional _mods) (setq ghostel-key-sent key))))
 
       ;; Test vterm backend
       (let ((claude-code-ide-terminal-backend 'vterm))
@@ -485,7 +491,11 @@ have completed before cleanup.  Waits up to 5 seconds."
         (should vterm-escape-sent)
 
         (claude-code-ide--terminal-send-return)
-        (should vterm-return-sent))
+        (should vterm-return-sent)
+
+        ;; Down arrow drives the select-option commands.
+        (claude-code-ide--terminal-send-down)
+        (should (equal vterm-key-sent "<down>")))
 
       ;; Test eat backend - need to mock the buffer-local variable
       (with-temp-buffer
@@ -501,7 +511,11 @@ have completed before cleanup.  Waits up to 5 seconds."
 
           (setq eat-string-sent nil)
           (claude-code-ide--terminal-send-return)
-          (should (equal eat-string-sent "\r"))))
+          (should (equal eat-string-sent "\r"))
+
+          (setq eat-string-sent nil)
+          (claude-code-ide--terminal-send-down)
+          (should (equal eat-string-sent "\e[B"))))
 
       ;; Test ghostel backend
       (with-temp-buffer
@@ -515,7 +529,49 @@ have completed before cleanup.  Waits up to 5 seconds."
 
           (setq ghostel-string-sent nil)
           (claude-code-ide--terminal-send-return)
-          (should (equal ghostel-string-sent "\r")))))))
+          (should (equal ghostel-string-sent "\r"))
+
+          ;; Without a ghostel branch this signalled "Unknown terminal
+          ;; backend", so select-option-2 through -4 were unusable.  Assert the
+          ;; key encoder is used rather than a raw escape sequence: Claude Code
+          ;; enables application cursor keys, where a hardcoded ESC [ B is
+          ;; ignored.
+          (setq ghostel-string-sent nil)
+          (claude-code-ide--terminal-send-down)
+          (should (equal ghostel-key-sent "down"))
+          (should-not ghostel-string-sent))))))
+
+(ert-deftest claude-code-ide-test-select-option-key-sequence ()
+  "Test that select-option-3 sends down, down, return in that order.
+The inter-key pause must be unconditional: `sit-for' returns early when
+input is pending, which is the normal case when these commands run from a
+transient, and the keys then arrive too close together for the CLI to
+register both arrows."
+  (let ((sent '())
+        (claude-code-ide-terminal-backend 'ghostel))
+    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda (&optional _dir) "*claude-code-test-options*"))
+              ((symbol-function 'claude-code-ide--terminal-send-down)
+               (lambda () (push 'down sent)))
+              ((symbol-function 'claude-code-ide--terminal-send-return)
+               (lambda () (push 'return sent))))
+      (let ((buffer (get-buffer-create "*claude-code-test-options*")))
+        (unwind-protect
+            (progn
+              (claude-code-ide-select-option-3)
+              (should (equal (nreverse sent) '(down down return)))
+              ;; Prove the delay is read from the defcustom rather than
+              ;; hardcoded: two pauses at 0.2s must cost at least 0.4s.
+              (setq sent '())
+              (let ((claude-code-ide-keystroke-pacing-delay 0.2)
+                    (start (float-time)))
+                (claude-code-ide-select-option-3)
+                (should (>= (- (float-time) start) 0.4))
+                (should (equal (nreverse sent) '(down down return))))
+              (setq sent '())
+              (claude-code-ide-select-option-1)
+              (should (equal (nreverse sent) '(return))))
+          (kill-buffer buffer))))))
 
 (ert-deftest claude-code-ide-test-send-prompt-command ()
   "Test the claude-code-ide-send-prompt command."
