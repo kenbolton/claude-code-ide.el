@@ -98,6 +98,7 @@
 ;; External function declarations for ghostel
 (declare-function ghostel-exec "ghostel" (buffer program &optional args))
 (declare-function ghostel-send-string "ghostel" (string))
+(declare-function ghostel-send-key "ghostel" (key-name &optional mods))
 (declare-function ghostel--window-adjust-process-window-size "ghostel" (process windows))
 
 ;;; Customization
@@ -594,6 +595,14 @@ unless `evil-ghostel-mode' is active in this buffer."
    ((eq claude-code-ide-terminal-backend 'eat)
     (when eat-terminal
       (eat-term-send-string eat-terminal "\e[B")))
+   ((eq claude-code-ide-terminal-backend 'ghostel)
+    ;; Use ghostel's key encoder rather than a raw escape sequence: it accounts
+    ;; for the terminal's current mode.  Claude Code runs with application
+    ;; cursor keys enabled, where down is ESC O B rather than ESC [ B, so a
+    ;; hardcoded sequence is silently ignored.
+    (if (fboundp 'ghostel-send-key)
+        (ghostel-send-key "down")
+      (claude-code-ide--terminal-send-string "\e[B")))
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
 
