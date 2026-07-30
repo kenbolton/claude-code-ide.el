@@ -541,6 +541,38 @@ have completed before cleanup.  Waits up to 5 seconds."
           (should (equal ghostel-key-sent "down"))
           (should-not ghostel-string-sent))))))
 
+(ert-deftest claude-code-ide-test-select-option-key-sequence ()
+  "Test that select-option-3 sends down, down, return in that order.
+The inter-key pause must be unconditional: `sit-for' returns early when
+input is pending, which is the normal case when these commands run from a
+transient, and the keys then arrive too close together for the CLI to
+register both arrows."
+  (let ((sent '())
+        (claude-code-ide-terminal-backend 'ghostel))
+    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda (&optional _dir) "*claude-code-test-options*"))
+              ((symbol-function 'claude-code-ide--terminal-send-down)
+               (lambda () (push 'down sent)))
+              ((symbol-function 'claude-code-ide--terminal-send-return)
+               (lambda () (push 'return sent))))
+      (let ((buffer (get-buffer-create "*claude-code-test-options*")))
+        (unwind-protect
+            (progn
+              (claude-code-ide-select-option-3)
+              (should (equal (nreverse sent) '(down down return)))
+              ;; Prove the delay is read from the defcustom rather than
+              ;; hardcoded: two pauses at 0.2s must cost at least 0.4s.
+              (setq sent '())
+              (let ((claude-code-ide-keystroke-pacing-delay 0.2)
+                    (start (float-time)))
+                (claude-code-ide-select-option-3)
+                (should (>= (- (float-time) start) 0.4))
+                (should (equal (nreverse sent) '(down down return))))
+              (setq sent '())
+              (claude-code-ide-select-option-1)
+              (should (equal (nreverse sent) '(return))))
+          (kill-buffer buffer))))))
+
 (ert-deftest claude-code-ide-test-send-prompt-command ()
   "Test the claude-code-ide-send-prompt command."
   (let ((test-prompt "Test prompt from minibuffer")

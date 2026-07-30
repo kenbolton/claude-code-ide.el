@@ -333,6 +333,20 @@ without noticeable latency."
   :type 'number
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-keystroke-pacing-delay 0.1
+  "Seconds to pause between consecutive keystrokes sent to the terminal.
+Several commands send more than one keystroke: the select-option commands
+send one or more down arrows before a return, and the prompt commands send
+text before a return.  A terminal or CLI can coalesce keys that arrive too
+close together, which makes a select-option command land on the wrong
+entry.  Raise this if that happens on a slower machine.
+
+The pause is deliberately unconditional.  `sit-for' returns immediately
+when input is pending, which is the normal case when these commands run
+from a transient, so `sleep-for' is used instead."
+  :type 'number
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-eat-preserve-position t
   "Maintain terminal scroll position when switching windows.
 When enabled, prevents the eat terminal from jumping to the top
@@ -1429,8 +1443,11 @@ as a newline."
     (if-let* ((buffer (get-buffer buffer-name)))
         (with-current-buffer buffer
           (claude-code-ide--terminal-send-string "\\")
-          ;; Small delay to ensure prompt text is processed before sending return
-          (sit-for 0.1)
+          ;; Unconditional pause so the text is processed before the return arrives.
+          ;; `sit-for' returns immediately when input is pending, which happens
+          ;; when these commands run from a transient, and the return then races
+          ;; the text it is meant to follow.
+          (sleep-for claude-code-ide-keystroke-pacing-delay)
           (claude-code-ide--terminal-send-return))
       (user-error "No Claude Code session for this project"))))
 
@@ -1454,7 +1471,7 @@ This sends down arrow followed by return."
     (if-let* ((buffer (get-buffer buffer-name)))
         (with-current-buffer buffer
           (claude-code-ide--terminal-send-down)
-          (sit-for 0.05)
+          (sleep-for claude-code-ide-keystroke-pacing-delay)
           (claude-code-ide--terminal-send-return))
       (user-error "No Claude Code session for this project"))))
 
@@ -1467,9 +1484,9 @@ This sends two down arrows followed by return."
     (if-let* ((buffer (get-buffer buffer-name)))
         (with-current-buffer buffer
           (claude-code-ide--terminal-send-down)
-          (sit-for 0.05)
+          (sleep-for claude-code-ide-keystroke-pacing-delay)
           (claude-code-ide--terminal-send-down)
-          (sit-for 0.05)
+          (sleep-for claude-code-ide-keystroke-pacing-delay)
           (claude-code-ide--terminal-send-return))
       (user-error "No Claude Code session for this project"))))
 
@@ -1482,11 +1499,11 @@ This sends three down arrows followed by return."
     (if-let* ((buffer (get-buffer buffer-name)))
         (with-current-buffer buffer
           (claude-code-ide--terminal-send-down)
-          (sit-for 0.05)
+          (sleep-for claude-code-ide-keystroke-pacing-delay)
           (claude-code-ide--terminal-send-down)
-          (sit-for 0.05)
+          (sleep-for claude-code-ide-keystroke-pacing-delay)
           (claude-code-ide--terminal-send-down)
-          (sit-for 0.05)
+          (sleep-for claude-code-ide-keystroke-pacing-delay)
           (claude-code-ide--terminal-send-return))
       (user-error "No Claude Code session for this project"))))
 
@@ -1515,8 +1532,11 @@ When called programmatically, sends the given PROMPT string."
           (when (not (string-empty-p prompt-to-send))
             (with-current-buffer buffer
               (claude-code-ide--terminal-send-string prompt-to-send)
-              ;; Small delay to ensure prompt text is processed before sending return
-              (sit-for 0.1)
+              ;; Unconditional pause so the text is processed before the return arrives.
+          ;; `sit-for' returns immediately when input is pending, which happens
+          ;; when these commands run from a transient, and the return then races
+          ;; the text it is meant to follow.
+              (sleep-for claude-code-ide-keystroke-pacing-delay)
               (claude-code-ide--terminal-send-return))
             (claude-code-ide-debug "Sent prompt to Claude Code: %s" prompt-to-send)))
       (user-error "No Claude Code session for this project"))))
