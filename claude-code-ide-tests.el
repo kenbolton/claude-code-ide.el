@@ -673,7 +673,7 @@ with an explanatory error rather than operating on the dead buffer."
         (cl-letf (((symbol-function 'claude-code-ide--ensure-cli)
                    (lambda () t))
                   ((symbol-function 'claude-code-ide--get-working-directory)
-                   (lambda () "/tmp/test-death/"))
+                   (lambda (&optional _force-dir) "/tmp/test-death/"))
                   ((symbol-function 'claude-code-ide--get-buffer-name)
                    (lambda (&optional _) "*test-death*"))
                   ((symbol-function 'claude-code-ide--terminal-ensure-backend)
