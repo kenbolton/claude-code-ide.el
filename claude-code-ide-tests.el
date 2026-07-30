@@ -533,9 +533,8 @@ have completed before cleanup.  Waits up to 5 seconds."
 
           ;; Without a ghostel branch this signalled "Unknown terminal
           ;; backend", so select-option-2 through -4 were unusable.  Assert the
-          ;; key encoder is used rather than a raw escape sequence: Claude Code
-          ;; enables application cursor keys, where a hardcoded ESC [ B is
-          ;; ignored.
+          ;; key goes through ghostel's own API rather than a pinned encoding,
+          ;; so the bytes follow the terminal's current mode.
           (setq ghostel-string-sent nil)
           (claude-code-ide--terminal-send-down)
           (should (equal ghostel-key-sent "down"))
@@ -547,8 +546,7 @@ The inter-key pause must be unconditional: `sit-for' returns early when
 input is pending, which is the normal case when these commands run from a
 transient, and the keys then arrive too close together for the CLI to
 register both arrows."
-  (let ((sent '())
-        (claude-code-ide-terminal-backend 'ghostel))
+  (let ((sent '()))
     (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
                (lambda (&optional _dir) "*claude-code-test-options*"))
               ((symbol-function 'claude-code-ide--terminal-send-down)

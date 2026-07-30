@@ -294,6 +294,7 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-vterm-anti-flicker~            | Enable vterm flicker reduction              | ~t~                                    |
 | ~claude-code-ide-vterm-render-delay~            | vterm render batching delay (seconds)       | ~0.005~                                |
 | ~claude-code-ide-terminal-initialization-delay~ | Initialization delay for terminals          | ~0.1~                                  |
+| ~claude-code-ide-keystroke-pacing-delay~        | Pause between keystrokes sent to the terminal | ~0.1~                                |
 | ~claude-code-ide-log-with-context~              | Include session context in log messages     | ~t~                                    |
 | ~claude-code-ide-debug-buffer~                  | Buffer name for debug output                | ~"*claude-code-ide-debug*"~              |
 | ~claude-code-ide-use-side-window~               | Use side window vs regular buffer           | ~t~                                    |

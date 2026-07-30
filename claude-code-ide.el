@@ -610,10 +610,11 @@ unless `evil-ghostel-mode' is active in this buffer."
     (when eat-terminal
       (eat-term-send-string eat-terminal "\e[B")))
    ((eq claude-code-ide-terminal-backend 'ghostel)
-    ;; Use ghostel's key encoder rather than a raw escape sequence: it accounts
-    ;; for the terminal's current mode.  Claude Code runs with application
-    ;; cursor keys enabled, where down is ESC O B rather than ESC [ B, so a
-    ;; hardcoded sequence is silently ignored.
+    ;; Route the key through ghostel's own API rather than pinning an encoding
+    ;; here.  The encoder follows the terminal's current mode (application
+    ;; cursor keys, Kitty keyboard protocol) instead of one fixed sequence, and
+    ;; it falls back to ESC [ B itself when it declines -- the same bytes the
+    ;; branch below sends, which the CLI does accept.
     (if (fboundp 'ghostel-send-key)
         (ghostel-send-key "down")
       (claude-code-ide--terminal-send-string "\e[B")))
@@ -1443,10 +1444,8 @@ as a newline."
     (if-let* ((buffer (get-buffer buffer-name)))
         (with-current-buffer buffer
           (claude-code-ide--terminal-send-string "\\")
-          ;; Unconditional pause so the text is processed before the return arrives.
-          ;; `sit-for' returns immediately when input is pending, which happens
-          ;; when these commands run from a transient, and the return then races
-          ;; the text it is meant to follow.
+          ;; See `claude-code-ide-keystroke-pacing-delay' for why the pause is
+          ;; unconditional.
           (sleep-for claude-code-ide-keystroke-pacing-delay)
           (claude-code-ide--terminal-send-return))
       (user-error "No Claude Code session for this project"))))
@@ -1532,10 +1531,8 @@ When called programmatically, sends the given PROMPT string."
           (when (not (string-empty-p prompt-to-send))
             (with-current-buffer buffer
               (claude-code-ide--terminal-send-string prompt-to-send)
-              ;; Unconditional pause so the text is processed before the return arrives.
-          ;; `sit-for' returns immediately when input is pending, which happens
-          ;; when these commands run from a transient, and the return then races
-          ;; the text it is meant to follow.
+              ;; See `claude-code-ide-keystroke-pacing-delay' for why the pause
+              ;; is unconditional.
               (sleep-for claude-code-ide-keystroke-pacing-delay)
               (claude-code-ide--terminal-send-return))
             (claude-code-ide-debug "Sent prompt to Claude Code: %s" prompt-to-send)))
