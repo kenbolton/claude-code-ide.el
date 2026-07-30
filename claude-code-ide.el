@@ -72,6 +72,7 @@
 (defvar vterm-shell)
 (defvar vterm-environment)
 (defvar eat-term-name)
+(defvar vterm-copy-mode)
 (defvar vterm--process)
 (defvar ghostel-set-title-function)
 (defvar ghostel-enable-title-tracking)
@@ -83,6 +84,7 @@
 (declare-function vterm "vterm" (&optional arg))
 (declare-function vterm-send-string "vterm" (string))
 (declare-function vterm-send-escape "vterm" ())
+(declare-function vterm-send-key "vterm" (key &optional shift meta ctrl))
 (declare-function vterm-send-return "vterm" ())
 (declare-function vterm--window-adjust-process-window-size "vterm" (&optional frame))
 
@@ -139,7 +141,7 @@ Set to nil to disable (default)."
 (defcustom claude-code-ide-mcp-allowed-tools 'auto
   "Configuration for allowed MCP tools when MCP server is enabled.
 Can be one of:
-  'auto - Automatically allow all configured emacs-tools (default)
+  `'auto' - Automatically allow all configured emacs-tools (default)
   nil - Disable the --allowedTools flag
   A string - Custom pattern/tools passed directly to --allowedTools
   A list of strings - List of specific tool names to allow"
@@ -262,6 +264,25 @@ alternative rendering mode that eliminates terminal flicker."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-editor-command "emacsclient"
+  "Command exposed as EDITOR and VISUAL to the Claude Code subprocess.
+When Claude Code invokes an external editor (for example when the
+user presses \\`C-g' in plan mode), it will run this command on a
+temporary file.  The default \"emacsclient\" routes the file into
+the current Emacs instance, so editing happens in Emacs rather than
+in a modal terminal editor inside the Claude buffer.
+
+When using \"emacsclient\", the Emacs server must already be
+running (start it with `M-x server-start' or by adding
+\(server-start) to your init file).  This package does not start
+the server for you.
+
+Set to nil or an empty string to leave the environment untouched
+and inherit whatever EDITOR/VISUAL the user's shell provides."
+  :type '(choice (const :tag "Inherit from shell" nil)
+                 (string :tag "Editor command"))
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-prevent-reflow-glitch t
   "Workaround for Claude Code terminal scrolling bug #1422.
 When non-nil (default), prevents the terminal from reflowing on height-only
@@ -294,6 +315,11 @@ with imperceptible latency."
   :type 'number
   :group 'claude-code-ide)
 
+(define-obsolete-variable-alias
+  'claude-code-ide-eat-initialization-delay
+  'claude-code-ide-terminal-initialization-delay
+  "0.2.6")
+
 (defcustom claude-code-ide-terminal-initialization-delay 0.1
   "Initialization delay for terminal stability.
 Provides a brief stabilization period when launching terminals
@@ -313,11 +339,6 @@ when you switch focus to other windows and return.  This provides
 a more stable viewing experience when working with multiple windows."
   :type 'boolean
   :group 'claude-code-ide)
-
-(define-obsolete-variable-alias
-  'claude-code-ide-eat-initialization-delay
-  'claude-code-ide-terminal-initialization-delay
-  "0.2.6")
 
 ;;; Constants
 
@@ -455,7 +476,6 @@ cursor management, and process buffering for superior user experience."
     (setq-local vterm--redraw-immididately nil))
   ;; Try to prevent cursor flickering by disabling Emacs' own cursor management
   (setq-local cursor-in-non-selected-windows nil)
-  (setq-local blink-cursor-mode nil)
   (setq-local cursor-type nil)  ; Let vterm handle the cursor entirely
   ;; Hide the hl-line overlay to eliminate another source of flicker, but keep
   ;; `global-hl-line-mode' running: binding the global mode variable buffer-locally
@@ -566,6 +586,17 @@ unless `evil-ghostel-mode' is active in this buffer."
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
 
+(defun claude-code-ide--terminal-send-down ()
+  "Send down arrow key to the terminal in the current buffer."
+  (cond
+   ((eq claude-code-ide-terminal-backend 'vterm)
+    (vterm-send-key "<down>"))
+   ((eq claude-code-ide-terminal-backend 'eat)
+    (when eat-terminal
+      (eat-term-send-string eat-terminal "\e[B")))
+   (t
+    (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
+
 (defun claude-code-ide--sync-terminal-dimensions (buffer window)
   "Sync terminal dimensions in BUFFER to match WINDOW size.
 This ensures the terminal process has the correct dimensions after
@@ -604,13 +635,11 @@ This function binds:
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
 
-;;; Terminal Reflow Glitch Prevention
+;;; Terminal Resize Handling
 ;;
-;; This section implements a workaround for Claude Code bug #1422
-;; where terminal reflows during height-only changes can cause
-;; uncontrollable scrolling. This code should be removed once
-;; the upstream bug is fixed.
-;; See: https://github.com/anthropics/claude-code/issues/1422
+;; Suppress terminal resizes during scroll/copy mode to keep the
+;; scroll position stable.  Outside of scroll mode the backend's
+;; resize handler runs normally so the process is always notified.
 
 (defun claude-code-ide--terminal-resize-handler ()
   "Retrieve the terminal's resize handling function based on backend."
@@ -635,34 +664,15 @@ This function binds:
     (string-prefix-p "*claude-code[" name)))
 
 (defun claude-code-ide--terminal-reflow-filter (original-fn &rest args)
-  "Filter terminal reflows to prevent height-only resize triggers.
-This wraps ORIGINAL-FN to suppress reflow signals unless the terminal
-width has actually changed, working around the scrolling glitch."
-  (let* ((base-result (apply original-fn args))
-         (dimensions-stable t))
-    ;; Examine each window showing a Claude session
-    (dolist (win (window-list))
-      (when-let* ((buf (window-buffer win))
-                  ((claude-code-ide--session-buffer-p buf)))
-        (let* ((new-width (window-width win))
-               (cached-width (window-parameter win 'claude-code-ide-cached-width)))
-          ;; Width change detected
-          (unless (eql new-width cached-width)
-            (setq dimensions-stable nil)
-            (set-window-parameter win 'claude-code-ide-cached-width new-width)))))
-    ;; Decide whether to allow reflow
-    (cond
-     ;; Not in a Claude buffer - pass through
-     ((not (claude-code-ide--session-buffer-p (current-buffer)))
-      base-result)
-     ;; In scroll mode - suppress reflow
-     ((claude-code-ide--terminal-scroll-mode-active-p)
-      nil)
-     ;; Dimensions changed - allow reflow
-     ((not dimensions-stable)
-      base-result)
-     ;; No width change - suppress reflow
-     (t nil))))
+  "Filter terminal reflows to prevent disruption during scroll mode.
+In scroll mode, suppress both the terminal emulator resize and the
+process notification to keep the scroll position stable.  Otherwise
+let ORIGINAL-FN run normally so the process is always notified of
+dimension changes."
+  (if (and (claude-code-ide--session-buffer-p (current-buffer))
+           (claude-code-ide--terminal-scroll-mode-active-p))
+      nil
+    (apply original-fn args)))
 
 
 ;;; Helper Functions
@@ -672,11 +682,14 @@ width has actually changed, working around the scrolling glitch."
   (format "*claude-code[%s]*"
           (file-name-nondirectory (directory-file-name directory))))
 
-(defun claude-code-ide--get-working-directory ()
-  "Get the current working directory (project root or current directory)."
-  (if-let* ((project (project-current)))
-      (expand-file-name (project-root project))
-    (expand-file-name default-directory)))
+(defun claude-code-ide--get-working-directory (&optional force-default-directory)
+  "Get the current working directory (project root or current directory).
+When FORCE-DEFAULT-DIRECTORY is non-nil, use `default-directory' directly."
+  (if force-default-directory
+      (expand-file-name default-directory)
+    (if-let* ((project (project-current)))
+        (expand-file-name (project-root project))
+      (expand-file-name default-directory))))
 
 (defun claude-code-ide--get-buffer-name (&optional directory)
   "Get the buffer name for the Claude Code session in DIRECTORY.
@@ -904,7 +917,8 @@ If CONTINUE is non-nil, add the -c flag.
 If RESUME is non-nil, add the -r flag.
 If SESSION-ID is provided, it's included in the MCP server URL path.
 If `claude-code-ide-cli-debug' is non-nil, add the -d flag.
-If `claude-code-ide-system-prompt' is non-nil, add the --append-system-prompt flag.
+If `claude-code-ide-system-prompt' is non-nil, add the --append-system-prompt
+flag.
 Additional flags from `claude-code-ide-cli-extra-flags' are also included."
   (let ((claude-cmd claude-code-ide-cli-path))
     ;; Add debug flag if enabled
@@ -1008,6 +1022,18 @@ absolute path sidesteps that lookup."
       program))
 
 
+(defun claude-code-ide--editor-env-vars ()
+  "Return EDITOR/VISUAL env-var strings for the Claude subprocess.
+Returns a list of two \"NAME=VALUE\" entries when
+`claude-code-ide-editor-command' names a command, or nil to leave
+EDITOR/VISUAL inherited from the parent environment."
+  (when (and (stringp claude-code-ide-editor-command)
+             (not (string-empty-p claude-code-ide-editor-command)))
+    (let ((cmd claude-code-ide-editor-command))
+      (list (format "EDITOR=%s" cmd)
+            (format "VISUAL=%s" cmd)))))
+
+
 (defun claude-code-ide--create-terminal-session (buffer-name working-dir port continue resume session-id)
   "Create a new terminal session for Claude Code.
 BUFFER-NAME is the name for the terminal buffer.
@@ -1023,15 +1049,19 @@ Signals an error if terminal fails to initialize."
   (claude-code-ide--terminal-ensure-backend)
   (let* ((claude-cmd (claude-code-ide--build-claude-command continue resume session-id))
          (default-directory working-dir)
+         (editor-env (claude-code-ide--editor-env-vars))
          (env-vars (append (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
                                  "TERM_PROGRAM=emacs"
                                  "FORCE_CODE_TERMINAL=true")
                            (when claude-code-ide-no-flicker
-                             (list "CLAUDE_CODE_NO_FLICKER=1")))))
+                             (list "CLAUDE_CODE_NO_FLICKER=1"))
+                           editor-env)))
     ;; Log the command for debugging
     (claude-code-ide-debug "Starting Claude with command: %s" claude-cmd)
     (claude-code-ide-debug "Working directory: %s" working-dir)
     (claude-code-ide-debug "Environment: CLAUDE_CODE_SSE_PORT=%d" port)
+    (when editor-env
+      (claude-code-ide-debug "Environment: %s" (car editor-env)))
     (claude-code-ide-debug "Session ID: %s" session-id)
     (claude-code-ide-debug "Terminal backend: %s" claude-code-ide-terminal-backend)
 
@@ -1129,10 +1159,11 @@ Signals an error if terminal fails to initialize."
      (t
       (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend)))))
 
-(defun claude-code-ide--start-session (&optional continue resume)
+(defun claude-code-ide--start-session (&optional continue resume force-dir)
   "Start a Claude Code session for the current project.
 If CONTINUE is non-nil, start Claude with the -c (continue) flag.
 If RESUME is non-nil, start Claude with the -r (resume) flag.
+If FORCE-DIR is non-nil, use `default-directory' instead of project root.
 
 This function handles:
 - CLI availability checking
@@ -1146,7 +1177,7 @@ This function handles:
   ;; Clean up any dead processes first
   (claude-code-ide--cleanup-dead-processes)
 
-  (let* ((working-dir (claude-code-ide--get-working-directory))
+  (let* ((working-dir (claude-code-ide--get-working-directory force-dir))
          (buffer-name (claude-code-ide--get-buffer-name))
          (existing-buffer (get-buffer buffer-name))
          (existing-process (claude-code-ide--get-process working-dir)))
@@ -1245,26 +1276,29 @@ This function handles:
            (signal (car err) (cdr err))))))))
 
 ;;;###autoload
-(defun claude-code-ide ()
-  "Run Claude Code in a terminal for the current project or directory."
-  (interactive)
-  (claude-code-ide--start-session))
+(defun claude-code-ide (&optional force-dir)
+  "Run Claude Code in a terminal for the current project or directory.
+With prefix argument FORCE-DIR, use `default-directory' instead of project root."
+  (interactive "P")
+  (claude-code-ide--start-session nil nil force-dir))
 
 ;;;###autoload
-(defun claude-code-ide-resume ()
+(defun claude-code-ide-resume (&optional force-dir)
   "Resume Claude Code in a terminal for the current project or directory.
 This starts Claude with the -r (resume) flag to continue the previous
-conversation."
-  (interactive)
-  (claude-code-ide--start-session nil t))
+conversation.  With prefix argument FORCE-DIR, use `default-directory'
+instead of project root."
+  (interactive "P")
+  (claude-code-ide--start-session nil t force-dir))
 
 ;;;###autoload
-(defun claude-code-ide-continue ()
+(defun claude-code-ide-continue (&optional force-dir)
   "Continue the most recent Claude Code conversation in the current directory.
 This starts Claude with the -c (continue) flag to continue the most recent
-conversation in the current directory."
-  (interactive)
-  (claude-code-ide--start-session t))
+conversation in the current directory.  With prefix argument FORCE-DIR, use
+`default-directory' instead of project root."
+  (interactive "P")
+  (claude-code-ide--start-session t nil force-dir))
 
 ;;;###autoload
 (defun claude-code-ide-check-status ()
@@ -1377,8 +1411,10 @@ If the buffer is already visible, switch focus to it."
 
 ;;;###autoload
 (defun claude-code-ide-insert-newline ()
-  "Send newline (backslash + return) to the Claude Code terminal buffer for the current project.
-This simulates typing backslash followed by Enter, which Claude Code interprets as a newline."
+  "Send newline (backslash + return) to the Claude Code terminal buffer for
+the current project.
+This simulates typing backslash followed by Enter, which Claude Code interprets
+as a newline."
   (interactive)
   (let ((buffer-name (claude-code-ide--get-buffer-name)))
     (if-let* ((buffer (get-buffer buffer-name)))
@@ -1386,6 +1422,62 @@ This simulates typing backslash followed by Enter, which Claude Code interprets 
           (claude-code-ide--terminal-send-string "\\")
           ;; Small delay to ensure prompt text is processed before sending return
           (sit-for 0.1)
+          (claude-code-ide--terminal-send-return))
+      (user-error "No Claude Code session for this project"))))
+
+;;;###autoload
+(defun claude-code-ide-select-option-1 ()
+  "Select the first option in Claude Code by sending return.
+This sends RET to confirm the currently highlighted option."
+  (interactive)
+  (let ((buffer-name (claude-code-ide--get-buffer-name)))
+    (if-let* ((buffer (get-buffer buffer-name)))
+        (with-current-buffer buffer
+          (claude-code-ide--terminal-send-return))
+      (user-error "No Claude Code session for this project"))))
+
+;;;###autoload
+(defun claude-code-ide-select-option-2 ()
+  "Select the second option in Claude Code.
+This sends down arrow followed by return."
+  (interactive)
+  (let ((buffer-name (claude-code-ide--get-buffer-name)))
+    (if-let* ((buffer (get-buffer buffer-name)))
+        (with-current-buffer buffer
+          (claude-code-ide--terminal-send-down)
+          (sit-for 0.05)
+          (claude-code-ide--terminal-send-return))
+      (user-error "No Claude Code session for this project"))))
+
+;;;###autoload
+(defun claude-code-ide-select-option-3 ()
+  "Select the third option in Claude Code.
+This sends two down arrows followed by return."
+  (interactive)
+  (let ((buffer-name (claude-code-ide--get-buffer-name)))
+    (if-let* ((buffer (get-buffer buffer-name)))
+        (with-current-buffer buffer
+          (claude-code-ide--terminal-send-down)
+          (sit-for 0.05)
+          (claude-code-ide--terminal-send-down)
+          (sit-for 0.05)
+          (claude-code-ide--terminal-send-return))
+      (user-error "No Claude Code session for this project"))))
+
+;;;###autoload
+(defun claude-code-ide-select-option-4 ()
+  "Select the fourth option in Claude Code.
+This sends three down arrows followed by return."
+  (interactive)
+  (let ((buffer-name (claude-code-ide--get-buffer-name)))
+    (if-let* ((buffer (get-buffer buffer-name)))
+        (with-current-buffer buffer
+          (claude-code-ide--terminal-send-down)
+          (sit-for 0.05)
+          (claude-code-ide--terminal-send-down)
+          (sit-for 0.05)
+          (claude-code-ide--terminal-send-down)
+          (sit-for 0.05)
           (claude-code-ide--terminal-send-return))
       (user-error "No Claude Code session for this project"))))
 
