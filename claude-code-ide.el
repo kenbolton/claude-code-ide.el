@@ -84,6 +84,7 @@
 (declare-function vterm "vterm" (&optional arg))
 (declare-function vterm-send-string "vterm" (string))
 (declare-function vterm-send-escape "vterm" ())
+(declare-function vterm-send-key "vterm" (key &optional shift meta ctrl))
 (declare-function vterm-send-return "vterm" ())
 (declare-function vterm--window-adjust-process-window-size "vterm" (&optional frame))
 
@@ -1423,7 +1424,7 @@ as a newline."
 This sends RET to confirm the currently highlighted option."
   (interactive)
   (let ((buffer-name (claude-code-ide--get-buffer-name)))
-    (if-let ((buffer (get-buffer buffer-name)))
+    (if-let* ((buffer (get-buffer buffer-name)))
         (with-current-buffer buffer
           (claude-code-ide--terminal-send-return))
       (user-error "No Claude Code session for this project"))))
@@ -1434,7 +1435,7 @@ This sends RET to confirm the currently highlighted option."
 This sends down arrow followed by return."
   (interactive)
   (let ((buffer-name (claude-code-ide--get-buffer-name)))
-    (if-let ((buffer (get-buffer buffer-name)))
+    (if-let* ((buffer (get-buffer buffer-name)))
         (with-current-buffer buffer
           (claude-code-ide--terminal-send-down)
           (sit-for 0.05)
@@ -1447,7 +1448,7 @@ This sends down arrow followed by return."
 This sends two down arrows followed by return."
   (interactive)
   (let ((buffer-name (claude-code-ide--get-buffer-name)))
-    (if-let ((buffer (get-buffer buffer-name)))
+    (if-let* ((buffer (get-buffer buffer-name)))
         (with-current-buffer buffer
           (claude-code-ide--terminal-send-down)
           (sit-for 0.05)
@@ -1462,7 +1463,7 @@ This sends two down arrows followed by return."
 This sends three down arrows followed by return."
   (interactive)
   (let ((buffer-name (claude-code-ide--get-buffer-name)))
-    (if-let ((buffer (get-buffer buffer-name)))
+    (if-let* ((buffer (get-buffer buffer-name)))
         (with-current-buffer buffer
           (claude-code-ide--terminal-send-down)
           (sit-for 0.05)
