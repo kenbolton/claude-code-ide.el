@@ -3702,6 +3702,35 @@ and make `cursor-sensor' try to move point off a fresh window (signalling
     (should-not (claude-code-ide-mcp-session-pending-permissions "/tmp/none/"))
     (should-not (claude-code-ide-mcp-session-cli-pid-for "/tmp/none/"))))
 
+(ert-deftest claude-code-ide-test-transient-descriptions-have-children ()
+  "Every menu group that carries a description also owns children.
+`transient--init-group' binds a group's children inside `and-let*', so a
+childless group is dropped whole and its description never reaches the
+buffer.  The session-status header was invisible for exactly this reason.
+The header is checked by name because it is the one that regressed."
+  (require 'claude-code-ide-transient)
+  (dolist (prefix '(claude-code-ide-menu
+                    claude-code-ide-newline-menu
+                    claude-code-ide-config-menu
+                    claude-code-ide-debug-menu))
+    (let* ((layout (get prefix 'transient--layout))
+           ;; Transient wraps the group list in a [level _ groups] vector.
+           (groups (if (vectorp layout) (aref layout 2) layout)))
+      (should groups)
+      (dolist (group groups)
+        (when (plist-get (aref group 1) :description)
+          (should (> (length (aref group 2)) 0))))))
+  ;; The status header specifically must still be attached, and attached to
+  ;; a group that survives initialization.
+  (let* ((layout (get 'claude-code-ide-menu 'transient--layout))
+         (groups (if (vectorp layout) (aref layout 2) layout))
+         (header (seq-find (lambda (group)
+                             (eq (plist-get (aref group 1) :description)
+                                 'claude-code-ide--session-status))
+                           groups)))
+    (should header)
+    (should (> (length (aref header 2)) 0))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

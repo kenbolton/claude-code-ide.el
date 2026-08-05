@@ -327,27 +327,30 @@ Otherwise, if multiple sessions exist, prompt for selection."
 ;;;###autoload (autoload 'claude-code-ide-menu "claude-code-ide-transient" "Claude Code IDE main menu." t)
 (transient-define-prefix claude-code-ide-menu ()
   "Claude Code IDE main menu."
-  [:description claude-code-ide--session-status]
-  ["Claude Code IDE"
-   ["Session Management"
-    ("s" claude-code-ide--start-if-no-session :description claude-code-ide--start-description)
-    ("c" claude-code-ide--continue-if-no-session :description claude-code-ide--continue-description)
-    ("r" claude-code-ide--resume-if-no-session :description claude-code-ide--resume-description)
-    ("q" "Stop current session" claude-code-ide-stop)
-    ("Q" "Stop all sessions" claude-code-ide-stop-all)
-    ("o" "Session overview" claude-code-ide-status)]
-   ["Navigation"
-    ("b" "Switch to Claude buffer" claude-code-ide-switch-to-buffer)
-    ("w" "Toggle window visibility" claude-code-ide-toggle-window)
-    ("W" "Toggle recent window" claude-code-ide-toggle-recent)]
-   ["Interaction"
-    ("i" "Insert selection" claude-code-ide-insert-at-mentioned)
-    ("p" "Send prompt from minibuffer" claude-code-ide-send-prompt)
-    ("e" "Send escape key" claude-code-ide-send-escape)
-    ("n" "Newline / Select option" claude-code-ide-newline-menu)]
-   ["Submenus"
-    ("C" "Configuration" claude-code-ide-config-menu)
-    ("d" "Debugging" claude-code-ide-debug-menu)]]
+  ;; The description rides on the group that owns the columns rather than a
+  ;; group of its own.  `transient--init-group' binds a group's children
+  ;; inside `and-let*', so a childless group is dropped whole and its
+  ;; description never reaches the buffer.
+  [:description claude-code-ide--session-status
+                ["Session Management"
+                 ("s" claude-code-ide--start-if-no-session :description claude-code-ide--start-description)
+                 ("c" claude-code-ide--continue-if-no-session :description claude-code-ide--continue-description)
+                 ("r" claude-code-ide--resume-if-no-session :description claude-code-ide--resume-description)
+                 ("q" "Stop current session" claude-code-ide-stop)
+                 ("Q" "Stop all sessions" claude-code-ide-stop-all)
+                 ("o" "Session overview" claude-code-ide-status)]
+                ["Navigation"
+                 ("b" "Switch to Claude buffer" claude-code-ide-switch-to-buffer)
+                 ("w" "Toggle window visibility" claude-code-ide-toggle-window)
+                 ("W" "Toggle recent window" claude-code-ide-toggle-recent)]
+                ["Interaction"
+                 ("i" "Insert selection" claude-code-ide-insert-at-mentioned)
+                 ("p" "Send prompt from minibuffer" claude-code-ide-send-prompt)
+                 ("e" "Send escape key" claude-code-ide-send-escape)
+                 ("n" "Newline / Select option" claude-code-ide-newline-menu)]
+                ["Submenus"
+                 ("C" "Configuration" claude-code-ide-config-menu)
+                 ("d" "Debugging" claude-code-ide-debug-menu)]]
   ;; Hidden but still bound: `l' runs the classic completing-read session
   ;; list, while only `o' (the overview) is shown in the menu.
   [:hide always
