@@ -185,7 +185,7 @@ Returns the session if found, nil otherwise."
 These are tool or diff requests Claude has blocked on; a positive count
 means the session needs the user.  Returns nil when there is no session."
   (when-let* ((session (claude-code-ide-mcp--get-session-for-project directory))
-             (deferred (claude-code-ide-mcp-session-deferred session)))
+              (deferred (claude-code-ide-mcp-session-deferred session)))
     (hash-table-count deferred)))
 
 (defun claude-code-ide-mcp-session-cli-pid-for (directory)
@@ -476,15 +476,15 @@ Optional SESSION contains the MCP session context."
                           (claude-code-ide-mcp-session-client session)
                         ;; Fallback: try to find session from current buffer using cache
                         (when-let* ((s (or (when (and claude-code-ide-mcp--buffer-cache-valid
-                                                     claude-code-ide-mcp--buffer-session-cache)
-                                            claude-code-ide-mcp--buffer-session-cache)
-                                          (when-let* ((project-dir (claude-code-ide-mcp--get-buffer-project))
-                                                      (found-session (claude-code-ide-mcp--get-session-for-project project-dir)))
-                                            ;; Cache the session (only cache non-nil values)
-                                            (when found-session
-                                              (setq claude-code-ide-mcp--buffer-session-cache found-session
-                                                    claude-code-ide-mcp--buffer-cache-valid t))
-                                            found-session))))
+                                                      claude-code-ide-mcp--buffer-session-cache)
+                                             claude-code-ide-mcp--buffer-session-cache)
+                                           (when-let* ((project-dir (claude-code-ide-mcp--get-buffer-project))
+                                                       (found-session (claude-code-ide-mcp--get-session-for-project project-dir)))
+                                             ;; Cache the session (only cache non-nil values)
+                                             (when found-session
+                                               (setq claude-code-ide-mcp--buffer-session-cache found-session
+                                                     claude-code-ide-mcp--buffer-cache-valid t))
+                                             found-session))))
                           (claude-code-ide-mcp-session-client s)))))
           (if client
               (let ((response-text (json-encode response)))
