@@ -3702,6 +3702,38 @@ and make `cursor-sensor' try to move point off a fresh window (signalling
     (should-not (claude-code-ide-mcp-session-pending-permissions "/tmp/none/"))
     (should-not (claude-code-ide-mcp-session-cli-pid-for "/tmp/none/"))))
 
+(defun claude-code-ide-tests--transient-groups (layout)
+  "Return LAYOUT's groups as a list of (ARGS-PLIST . CHILDREN) pairs.
+Transient changed how it stores a parsed layout, so reading it by fixed
+index breaks across versions.  Before transient 0.9 a layout was a bare
+list of [LEVEL CLASS ARGS CHILDREN] groups; since then it is a
+[LEVEL _ GROUPS] vector holding [CLASS ARGS CHILDREN] groups.  Normalize
+both, so the caller can assert the invariant rather than the encoding."
+  (let ((groups (if (and (vectorp layout)
+                         (integerp (aref layout 0)))
+                    (aref layout 2)
+                  layout)))
+    (mapcar (lambda (group)
+              (pcase (length group)
+                (4 (cons (aref group 2) (aref group 3)))
+                (3 (cons (aref group 1) (aref group 2)))
+                (_ (cons nil nil))))
+            groups)))
+
+(ert-deftest claude-code-ide-test-transient-groups-normalizer ()
+  "The layout normalizer reads both transient encodings.
+Pins the helper the header test depends on, so a transient upgrade that
+changes the encoding fails here with a clear cause rather than as a
+puzzling assertion in the test below."
+  ;; Pre-0.9: bare list of [LEVEL CLASS ARGS CHILDREN] groups.
+  (should (equal (claude-code-ide-tests--transient-groups
+                  (list (vector 1 'transient-column '(:description foo) '(a b))))
+                 '(((:description foo) . (a b)))))
+  ;; 0.9 and later: [LEVEL _ GROUPS] holding [CLASS ARGS CHILDREN] groups.
+  (should (equal (claude-code-ide-tests--transient-groups
+                  (vector 2 nil (list (vector 'transient-column '(:description foo) '(a b)))))
+                 '(((:description foo) . (a b))))))
+
 (ert-deftest claude-code-ide-test-transient-descriptions-have-children ()
   "Every menu group that carries a description also owns children.
 `transient--init-group' binds a group's children inside `and-let*', so a
@@ -3713,23 +3745,21 @@ The header is checked by name because it is the one that regressed."
                     claude-code-ide-newline-menu
                     claude-code-ide-config-menu
                     claude-code-ide-debug-menu))
-    (let* ((layout (get prefix 'transient--layout))
-           ;; Transient wraps the group list in a [level _ groups] vector.
-           (groups (if (vectorp layout) (aref layout 2) layout)))
+    (let ((groups (claude-code-ide-tests--transient-groups
+                   (get prefix 'transient--layout))))
       (should groups)
-      (dolist (group groups)
-        (when (plist-get (aref group 1) :description)
-          (should (> (length (aref group 2)) 0))))))
+      (pcase-dolist (`(,args . ,children) groups)
+        (when (plist-get args :description)
+          (should children)))))
   ;; The status header specifically must still be attached, and attached to
   ;; a group that survives initialization.
-  (let* ((layout (get 'claude-code-ide-menu 'transient--layout))
-         (groups (if (vectorp layout) (aref layout 2) layout))
-         (header (seq-find (lambda (group)
-                             (eq (plist-get (aref group 1) :description)
-                                 'claude-code-ide--session-status))
-                           groups)))
+  (let ((header (seq-find (lambda (group)
+                            (eq (plist-get (car group) :description)
+                                'claude-code-ide--session-status))
+                          (claude-code-ide-tests--transient-groups
+                           (get 'claude-code-ide-menu 'transient--layout)))))
     (should header)
-    (should (> (length (aref header 2)) 0))))
+    (should (cdr header))))
 
 (provide 'claude-code-ide-tests)
 
