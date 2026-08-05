@@ -231,10 +231,19 @@ display-buffer behavior."
 Can be `vterm', `eat', or `ghostel'.  The vterm backend is the default
 and provides a fully-featured terminal emulator.  The eat backend
 is an alternative terminal emulator that may work better in some
-environments."
+environments.  The ghostel backend is the recommended one: it renders
+Claude Code's TUI with the fewest artifacts (see the README)."
   :type '(choice (const :tag "vterm" vterm)
                  (const :tag "eat" eat)
                  (const :tag "ghostel" ghostel))
+  :group 'claude-code-ide)
+
+(defcustom claude-code-ide-show-backend-recommendation t
+  "When non-nil, recommend the ghostel backend once per Emacs session.
+Starting a session on the vterm or eat backend echoes a one-time
+suggestion to try ghostel, which renders Claude Code's TUI with the
+fewest artifacts.  Set to nil to silence the suggestion."
+  :type 'boolean
   :group 'claude-code-ide)
 
 (defcustom claude-code-ide-ghostel-evil-escape 'evil
@@ -373,6 +382,9 @@ a more stable viewing experience when working with multiple windows."
 
 (defvar claude-code-ide--last-accessed-buffer nil
   "The most recently accessed Claude Code buffer.")
+
+(defvar claude-code-ide--backend-recommendation-shown nil
+  "Non-nil once the ghostel recommendation was echoed this Emacs session.")
 
 ;;; Vterm Rendering Optimization
 
@@ -1057,6 +1069,15 @@ EDITOR/VISUAL inherited from the parent environment."
       (list (format "EDITOR=%s" cmd)
             (format "VISUAL=%s" cmd)))))
 
+(defun claude-code-ide--maybe-recommend-ghostel ()
+  "Suggest the ghostel backend once when running on vterm or eat."
+  (when (and claude-code-ide-show-backend-recommendation
+             (not claude-code-ide--backend-recommendation-shown)
+             (memq claude-code-ide-terminal-backend '(vterm eat)))
+    (setq claude-code-ide--backend-recommendation-shown t)
+    (message "Claude Code IDE: ghostel is the recommended terminal backend (currently using %s) — see the README; set claude-code-ide-show-backend-recommendation to nil to hide this"
+             claude-code-ide-terminal-backend)))
+
 
 (defun claude-code-ide--create-terminal-session (buffer-name working-dir port continue resume session-id)
   "Create a new terminal session for Claude Code.
@@ -1291,7 +1312,9 @@ This function handles:
                                            (t ""))
                                      (file-name-nondirectory (directory-file-name working-dir))
                                      port
-                                     (if claude-code-ide-cli-debug " (debug mode enabled)" ""))))
+                                     (if claude-code-ide-cli-debug " (debug mode enabled)" ""))
+                ;; Delayed so the startup message above stays readable first
+                (run-with-timer 2 nil #'claude-code-ide--maybe-recommend-ghostel)))
           (error
            ;; Terminal session creation failed - clean up MCP server
            (when port

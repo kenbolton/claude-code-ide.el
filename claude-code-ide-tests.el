@@ -457,6 +457,30 @@ have completed before cleanup.  Waits up to 5 seconds."
       (should-error (claude-code-ide--terminal-ensure-backend)
                     :type 'user-error))))
 
+(ert-deftest claude-code-ide-test-backend-recommendation ()
+  "The ghostel suggestion is echoed once, only for vterm and eat."
+  (let ((claude-code-ide--backend-recommendation-shown nil)
+        (claude-code-ide-show-backend-recommendation t)
+        (messages '()))
+    (cl-letf (((symbol-function 'message)
+               (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+      ;; ghostel: no suggestion
+      (let ((claude-code-ide-terminal-backend 'ghostel))
+        (claude-code-ide--maybe-recommend-ghostel))
+      (should (null messages))
+      ;; eat: suggested once, then never again
+      (let ((claude-code-ide-terminal-backend 'eat))
+        (claude-code-ide--maybe-recommend-ghostel)
+        (claude-code-ide--maybe-recommend-ghostel))
+      (should (= 1 (length messages)))
+      (should (string-match-p "ghostel" (car messages)))
+      ;; disabled: nothing even when unseen
+      (let ((claude-code-ide--backend-recommendation-shown nil)
+            (claude-code-ide-show-backend-recommendation nil)
+            (claude-code-ide-terminal-backend 'vterm))
+        (claude-code-ide--maybe-recommend-ghostel))
+      (should (= 1 (length messages))))))
+
 (ert-deftest claude-code-ide-test-terminal-send-functions ()
   "Test terminal send wrapper functions."
   ;; Mock vterm functions
