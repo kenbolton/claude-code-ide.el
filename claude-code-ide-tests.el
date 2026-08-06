@@ -3702,6 +3702,39 @@ and make `cursor-sensor' try to move point off a fresh window (signalling
     (should-not (claude-code-ide-mcp-session-pending-permissions "/tmp/none/"))
     (should-not (claude-code-ide-mcp-session-cli-pid-for "/tmp/none/"))))
 
+(ert-deftest claude-code-ide-test-status-column-arity-agrees ()
+  "The header list and every row producer agree on the column count.
+`claude-code-ide-status--refresh-columns' rebuilds `tabulated-list-format'
+from `claude-code-ide-status--columns' on every refresh, so a header list
+shorter than the rows silently shifts each value one column left and drops
+the last.  It also defeats the resume cache, whose staleness check compares
+these same two lengths and would then fire on every call.
+
+Both producers are checked, because they build their vectors separately
+and only one of them failing is enough to misalign the table."
+  (claude-code-ide-tests--clear-processes)
+  (unwind-protect
+      (let ((width (length claude-code-ide-status--columns)))
+        ;; A live row.
+        (puthash "/tmp/arity/" (current-buffer) claude-code-ide--processes)
+        (cl-letf (((symbol-function 'claude-code-ide--cleanup-dead-processes)
+                   (lambda () nil)))
+          (let ((row (car (claude-code-ide-status--live-entries))))
+            (should row)
+            (should (= (length (cadr row)) width))))
+        ;; A resume row, built by the other producer.
+        (let ((claude-code-ide-status-projects-directory
+               (make-temp-file "ccide-arity-" t)))
+          (unwind-protect
+              (let ((sub (expand-file-name "proj" claude-code-ide-status-projects-directory)))
+                (make-directory sub t)
+                (with-temp-file (expand-file-name "s.jsonl" sub)
+                  (insert "{\"type\":\"user\",\"cwd\":\"/tmp/arity-resume/\"}\n"))
+                (when-let* ((row (car (claude-code-ide-status--build-resume-rows))))
+                  (should (= (length (cadr row)) width))))
+            (delete-directory claude-code-ide-status-projects-directory t))))
+    (claude-code-ide-tests--clear-processes)))
+
 (ert-deftest claude-code-ide-test-status-project-label ()
   "`project-label' compacts worktree paths and leaves plain projects alone."
   (let ((claude-code-ide-status-worktree-directories '(".worktrees" "worktrees")))
