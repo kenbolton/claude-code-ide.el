@@ -106,6 +106,16 @@ a column with very long project paths or branch names may grow."
   :type 'integer
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-status-worktree-directories '(".worktrees" "worktrees")
+  "Directory names that hold git worktrees beside or inside a repository.
+A session running in a worktree has a path whose leading components repeat
+the repository on every row, pushing the part that identifies the session
+off the right edge.  When a session directory sits directly inside one of
+these, the Project column shows REPOSITORY/WORKTREE instead of the whole
+path.  Set to nil to always show the plain directory name."
+  :type '(repeat string)
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-status-attention-interval 3
   "Seconds between updates of the global attention indicator.
 See `claude-code-ide-status-attention-mode'."
@@ -370,6 +380,36 @@ rather than by the glyph of the label string."
           ((< s 86400) (format "%dh%02dm" (/ s 3600) (% (/ s 60) 60)))
           (t (format "%dd%02dh" (/ s 86400) (% (/ s 3600) 24))))))
 
+(defun claude-code-ide-status--project-label (dir)
+  "Return a compact label identifying the project or worktree at DIR.
+When DIR sits directly inside one of
+`claude-code-ide-status-worktree-directories', the result is
+REPOSITORY/WORKTREE; otherwise it is the directory name.  The full path
+stays reachable as a `help-echo', so nothing is lost by shortening it.
+
+Worktree paths repeat their repository prefix on every row, which pushes
+the distinguishing part off the right edge exactly when several worktrees
+of one repository are running at once."
+  (let* ((clean (directory-file-name (expand-file-name dir)))
+         (leaf (file-name-nondirectory clean))
+         (container (file-name-directory clean))
+         (container-name (and container
+                              (file-name-nondirectory
+                               (directory-file-name container))))
+         (label
+          (if (and container-name
+                   (member container-name
+                           claude-code-ide-status-worktree-directories))
+              (let* ((repo (file-name-directory (directory-file-name container)))
+                     (repo-name (and repo (file-name-nondirectory
+                                           (directory-file-name repo)))))
+                (if (and repo-name (not (string-empty-p repo-name)))
+                    (format "%s/%s" repo-name leaf)
+                  leaf))
+            leaf)))
+    (propertize (if (string-empty-p label) (abbreviate-file-name dir) label)
+                'help-echo (abbreviate-file-name dir))))
+
 (defun claude-code-ide-status--uptime-string (dir)
   "Return how long the Claude process in DIR has run, or \"\" if unknown."
   (or (when-let* ((pid (claude-code-ide-mcp-session-cli-pid-for dir))
@@ -430,7 +470,7 @@ waiting, idle, and disconnected."
         (push (cons state
                     (list (cons dir 'live)
                           (vector (claude-code-ide-status--state-label state)
-                                  (abbreviate-file-name dir)
+                                  (claude-code-ide-status--project-label dir)
                                   branch
                                   (claude-code-ide-status--uptime-string dir)
                                   (claude-code-ide-status--last-output-string dir))))
@@ -487,7 +527,7 @@ result rather than repeating it; see `claude-code-ide-status--resume-entries'."
                (dir   (cdr row)))
            (list (cons dir 'resume)
                  (vector (claude-code-ide-status--state-label 'resume)
-                         (abbreviate-file-name dir)
+                         (claude-code-ide-status--project-label dir)
                          (or (claude-code-ide-status--branch dir) "—")
                          ""                    ; Uptime — not running
                          (claude-code-ide-status--ago-string mtime)))))  ; Last output

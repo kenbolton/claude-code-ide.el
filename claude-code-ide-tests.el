@@ -3702,6 +3702,43 @@ and make `cursor-sensor' try to move point off a fresh window (signalling
     (should-not (claude-code-ide-mcp-session-pending-permissions "/tmp/none/"))
     (should-not (claude-code-ide-mcp-session-cli-pid-for "/tmp/none/"))))
 
+(ert-deftest claude-code-ide-test-status-project-label ()
+  "`project-label' compacts worktree paths and leaves plain projects alone."
+  (let ((claude-code-ide-status-worktree-directories '(".worktrees" "worktrees")))
+    ;; A plain checkout keeps its directory name.
+    (should (equal (substring-no-properties
+                    (claude-code-ide-status--project-label
+                     "/Users/x/Develop/kycsystems/kycsitescan/"))
+                   "kycsitescan"))
+    ;; A worktree inside the repository shows repository and worktree.
+    (should (equal (substring-no-properties
+                    (claude-code-ide-status--project-label
+                     "/Users/x/Develop/kycsystems/kycsitescan/.worktrees/3919-ip-api/"))
+                   "kycsitescan/3919-ip-api"))
+    ;; A worktree in a container beside the repositories names that container.
+    (should (equal (substring-no-properties
+                    (claude-code-ide-status--project-label
+                     "/Users/x/Develop/kycsystems/.worktrees/kycsitescan_434-crawls/"))
+                   "kycsystems/kycsitescan_434-crawls"))
+    ;; A trailing slash is not required.
+    (should (equal (substring-no-properties
+                    (claude-code-ide-status--project-label
+                     "/Users/x/Develop/kycsystems/mtbeacon"))
+                   "mtbeacon"))
+    ;; The full path stays reachable, so shortening loses nothing.
+    (should (equal (get-text-property
+                    0 'help-echo
+                    (claude-code-ide-status--project-label
+                     "/Users/x/Develop/kycsystems/kycsitescan/.worktrees/3919-ip-api/"))
+                   (abbreviate-file-name
+                    "/Users/x/Develop/kycsystems/kycsitescan/.worktrees/3919-ip-api/"))))
+  ;; Opting out restores the plain directory name.
+  (let ((claude-code-ide-status-worktree-directories nil))
+    (should (equal (substring-no-properties
+                    (claude-code-ide-status--project-label
+                     "/Users/x/Develop/kycsystems/kycsitescan/.worktrees/3919-ip-api/"))
+                   "3919-ip-api"))))
+
 (ert-deftest claude-code-ide-test-status-last-output-string ()
   "`last-output-string' reports elapsed time and never repeats a State word.
 The State column already names what a session is doing, so this column
