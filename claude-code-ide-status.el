@@ -343,7 +343,7 @@ attending to it, so any explicit waiting flag is dropped."
 Shared by the State column labels and the mode-line breakdown badge.")
 
 (defconst claude-code-ide-status--columns
-  ["State" "Project" "Branch" "Uptime" "Activity"]
+  ["State" "Project" "Branch" "Uptime" "Last output"]
   "Header labels for the status columns, in order.")
 
 (defun claude-code-ide-status--state-label (state)
@@ -378,17 +378,20 @@ rather than by the glyph of the label string."
         (claude-code-ide-status--format-duration (float-time etime)))
       ""))
 
-(defun claude-code-ide-status--activity-string (dir)
-  "Return a short description of DIR's recent terminal activity.
-`working' when its terminal is producing output, otherwise how long it has
-been idle (or a dash when that is unknown)."
+(defun claude-code-ide-status--last-output-string (dir)
+  "Return how long ago DIR's terminal last produced output.
+\"now\" while it is still producing, otherwise the elapsed time, or a dash
+when the session has not been seen to produce output at all.
+
+Deliberately a duration and nothing else.  The State column already names
+what a session is doing, so repeating `working' or `idle' here would say
+the same thing twice; the elapsed time is the part State cannot express."
   (cond
-   ((claude-code-ide-status--busy-p dir) "working")
+   ((claude-code-ide-status--busy-p dir) "now")
    ((when-let* ((entry (gethash dir claude-code-ide-status--activity)))
       (and (> (cdr entry) 0)
-           (format "idle %s"
-                   (claude-code-ide-status--format-duration
-                    (- (float-time) (cdr entry)))))))
+           (claude-code-ide-status--format-duration
+            (- (float-time) (cdr entry))))))
    (t "—")))
 
 (defun claude-code-ide-status--ago-string (time)
@@ -430,7 +433,7 @@ waiting, idle, and disconnected."
                                   (abbreviate-file-name dir)
                                   branch
                                   (claude-code-ide-status--uptime-string dir)
-                                  (claude-code-ide-status--activity-string dir))))
+                                  (claude-code-ide-status--last-output-string dir))))
               rows)))
     (mapcar #'cdr
             (sort rows (lambda (a b)
@@ -487,7 +490,7 @@ result rather than repeating it; see `claude-code-ide-status--resume-entries'."
                          (abbreviate-file-name dir)
                          (or (claude-code-ide-status--branch dir) "—")
                          ""                    ; Uptime — not running
-                         (claude-code-ide-status--ago-string mtime)))))  ; Activity
+                         (claude-code-ide-status--ago-string mtime)))))  ; Last output
        rows))))
 
 (defun claude-code-ide-status--resume-entries (exclude)
@@ -665,7 +668,7 @@ diff, blocked on your input, or a finished turn), followed by resumable
 projects from Claude's on-disk history."
   (setq tabulated-list-format
         [("State" 14 t) ("Project" 40 t) ("Branch" 18 t)
-         ("Uptime" 8 t) ("Activity" 12 t)]
+         ("Uptime" 8 t) ("Last output" 12 t)]
         tabulated-list-entries #'claude-code-ide-status--entries
         tabulated-list-padding 1
         ;; Draw the column header as the first buffer line, but make it

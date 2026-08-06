@@ -3702,6 +3702,31 @@ and make `cursor-sensor' try to move point off a fresh window (signalling
     (should-not (claude-code-ide-mcp-session-pending-permissions "/tmp/none/"))
     (should-not (claude-code-ide-mcp-session-cli-pid-for "/tmp/none/"))))
 
+(ert-deftest claude-code-ide-test-status-last-output-string ()
+  "`last-output-string' reports elapsed time and never repeats a State word.
+The State column already names what a session is doing, so this column
+carries only what State cannot express: how long ago output arrived."
+  (claude-code-ide-tests--clear-processes)
+  (clrhash claude-code-ide-status--activity)
+  (unwind-protect
+      (let ((dir "/tmp/proj-lastout/"))
+        ;; Never seen producing output -> a dash, not a word.
+        (should (equal (claude-code-ide-status--last-output-string dir) "—"))
+        ;; Producing output right now -> "now", not "working".
+        (puthash dir (cons 1 (float-time)) claude-code-ide-status--activity)
+        (should (equal (claude-code-ide-status--last-output-string dir) "now"))
+        ;; Quiet past the busy timeout -> a bare duration, not "idle N".
+        (puthash dir (cons 1 (- (float-time)
+                                claude-code-ide-status-busy-timeout 300))
+                 claude-code-ide-status--activity)
+        (let ((s (claude-code-ide-status--last-output-string dir)))
+          (should (string-match-p "\\`[0-9]" s))
+          ;; The overlap this column was rewritten to remove.
+          (dolist (word '("working" "idle" "waiting" "permission"))
+            (should-not (string-match-p word s)))))
+    (claude-code-ide-tests--clear-processes)
+    (clrhash claude-code-ide-status--activity)))
+
 (defun claude-code-ide-tests--transient-groups (layout)
   "Return LAYOUT's groups as a list of (ARGS-PLIST . CHILDREN) pairs.
 Transient changed how it stores a parsed layout, so reading it by fixed
