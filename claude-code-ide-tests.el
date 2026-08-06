@@ -4226,6 +4226,36 @@ one project are told apart."
   (let ((window-min-width 10000))       ; force `split-window' to fail
     (should (null (claude-code-ide-status--display-in-split (current-buffer))))))
 
+(ert-deftest claude-code-ide-test-status-column-arity-agrees ()
+  "The header list and every row producer agree on the column count.
+`claude-code-ide-status--refresh-columns' rebuilds `tabulated-list-format'
+from `claude-code-ide-status--columns' on every refresh, so a header list
+shorter than the rows silently shifts each value one column left and drops
+the last.  It also defeats the resume cache, whose staleness check compares
+these same lengths."
+  (claude-code-ide-tests--clear-processes)
+  (unwind-protect
+      (let ((width (length claude-code-ide-status--columns)))
+        ;; A live row.
+        (claude-code-ide-tests--make-session "/tmp/arity/")
+        (cl-letf (((symbol-function 'claude-code-ide--cleanup-dead-sessions)
+                   (lambda () nil)))
+          (let ((row (car (claude-code-ide-status--live-entries))))
+            (should row)
+            (should (= (length (cadr row)) width))))
+        ;; A resume row, built by the other producer.
+        (let ((claude-code-ide-status-projects-directory
+               (make-temp-file "ccide-arity-" t)))
+          (unwind-protect
+              (let ((sub (expand-file-name "proj" claude-code-ide-status-projects-directory)))
+                (make-directory sub t)
+                (with-temp-file (expand-file-name "s.jsonl" sub)
+                  (insert "{\"type\":\"user\",\"cwd\":\"/tmp/arity-resume/\"}\n"))
+                (when-let* ((row (car (claude-code-ide-status--build-resume-rows))))
+                  (should (= (length (cadr row)) width))))
+            (delete-directory claude-code-ide-status-projects-directory t))))
+    (claude-code-ide-tests--clear-processes)))
+
 (ert-deftest claude-code-ide-test-status-resume-cache-arity ()
   "A cached resume row with a stale column count is rebuilt, not printed."
   (let ((claude-code-ide-status-projects-directory "/nonexistent-ccide/")
@@ -4275,14 +4305,19 @@ and make `cursor-sensor' try to move point off a fresh window (signalling
   (claude-code-ide-tests--clear-processes)
   (with-temp-buffer
     (claude-code-ide-status-mode)
-    (cl-letf (((symbol-function 'claude-code-ide--cleanup-dead-processes)
+    (cl-letf (((symbol-function 'claude-code-ide--cleanup-dead-sessions)
                (lambda () nil))
-              ;; One live row so there is a first data row to inspect.
+              ;; One live row so there is a first data row to inspect.  Its
+              ;; width tracks the header list, so this fixture cannot drift
+              ;; out of arity the way a hand-counted vector would.
               ((symbol-function 'claude-code-ide-status--entries)
                (lambda ()
                  (list (list (cons "/tmp/x/" 'live)
-                             (vector (claude-code-ide-status--state-label 'idle)
-                                     "~/x/" "main" "" ""))))))
+                             (vconcat
+                              (vector (claude-code-ide-status--state-label 'idle))
+                              (make-vector
+                               (1- (length claude-code-ide-status--columns))
+                               "")))))))
       (claude-code-ide-status--redraw)
       (let ((row1 (save-excursion (goto-char (point-min))
                                   (forward-line 1) (point))))
