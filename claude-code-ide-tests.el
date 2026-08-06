@@ -3171,7 +3171,8 @@ dropped and the class never appears with a location of its own."
             (should (= (length entries) 1))
             (should (equal (car id) dir))
             (should (eq (cdr id) 'live))
-            (should (= (length cols) 5))
+            (should (= (length cols)
+                       (length claude-code-ide-status--columns)))
             (should (string-match-p "proj-live" (aref cols 1))))))
     (claude-code-ide-tests--clear-processes)))
 
@@ -3625,8 +3626,11 @@ and make `cursor-sensor' try to move point off a fresh window (signalling
               ((symbol-function 'claude-code-ide-status--entries)
                (lambda ()
                  (list (list (cons "/tmp/x/" 'live)
-                             (vector (claude-code-ide-status--state-label 'idle)
-                                     "~/x/" "main" "" ""))))))
+                             (vconcat
+                              (vector (claude-code-ide-status--state-label 'idle))
+                              (make-vector
+                               (1- (length claude-code-ide-status--columns))
+                               "")))))))
       (claude-code-ide-status--redraw)
       (let ((row1 (save-excursion (goto-char (point-min))
                                   (forward-line 1) (point))))
@@ -3701,6 +3705,51 @@ and make `cursor-sensor' try to move point off a fresh window (signalling
     (should-not (claude-code-ide-mcp-session-connected-p "/tmp/none/"))
     (should-not (claude-code-ide-mcp-session-pending-permissions "/tmp/none/"))
     (should-not (claude-code-ide-mcp-session-cli-pid-for "/tmp/none/"))))
+
+(ert-deftest claude-code-ide-test-status-format-tokens ()
+  "Token counts render compactly, and nothing renders as a dash."
+  (should (equal (claude-code-ide-status--format-tokens nil) "—"))
+  (should (equal (claude-code-ide-status--format-tokens 0) "—"))
+  (should (equal (claude-code-ide-status--format-tokens 411) "411"))
+  (should (equal (claude-code-ide-status--format-tokens 12400) "12.4k"))
+  (should (equal (claude-code-ide-status--format-tokens 1200000) "1.2M")))
+
+(ert-deftest claude-code-ide-test-status-scan-output-tokens ()
+  "Output tokens accumulate, reading only bytes appended since last scan.
+Transcripts reach several megabytes, so a re-read on every refresh would
+be too costly; the scan keeps a byte cursor.  A partial trailing line,
+which occurs while Claude is mid-write, must not be consumed twice."
+  (let ((file (make-temp-file "ccide-tokens-" nil ".jsonl")))
+    (unwind-protect
+        (progn
+          (clrhash claude-code-ide-status--output-tokens)
+          ;; Cache reads dwarf output and must not be counted.
+          (with-temp-file file
+            (insert "{\"usage\":{\"output_tokens\":100,\"cache_read_input_tokens\":99999}}\n"
+                    "{\"usage\":{\"output_tokens\":50,\"input_tokens\":7}}\n"))
+          (should (= (claude-code-ide-status--scan-output-tokens file) 150))
+          ;; Re-scanning without new bytes must not double-count.
+          (should (= (claude-code-ide-status--scan-output-tokens file) 150))
+          ;; Only the appended record is added.
+          (with-temp-buffer
+            (insert "{\"usage\":{\"output_tokens\":25}}\n")
+            (append-to-file (point-min) (point-max) file))
+          (should (= (claude-code-ide-status--scan-output-tokens file) 175))
+          ;; A partial line is left for the next scan, then counted once.
+          (with-temp-buffer
+            (insert "{\"usage\":{\"output_tokens\":9")
+            (append-to-file (point-min) (point-max) file))
+          (should (= (claude-code-ide-status--scan-output-tokens file) 175))
+          (with-temp-buffer
+            (insert "99}}\n")
+            (append-to-file (point-min) (point-max) file))
+          (should (= (claude-code-ide-status--scan-output-tokens file) 1174))
+          ;; A shorter file is a different session; the total restarts.
+          (with-temp-file file
+            (insert "{\"usage\":{\"output_tokens\":5}}\n"))
+          (should (= (claude-code-ide-status--scan-output-tokens file) 5)))
+      (delete-file file)
+      (clrhash claude-code-ide-status--output-tokens))))
 
 (ert-deftest claude-code-ide-test-status-column-arity-agrees ()
   "The header list and every row producer agree on the column count.
