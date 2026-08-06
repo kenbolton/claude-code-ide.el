@@ -3792,7 +3792,8 @@ ID, since the directory no longer identifies an instance."
             (should (member (cons (claude-code-ide-mcp-session-session-id two) 'live) ids))
             (let ((cols (cadr (car entries))))
               ;; State, Instance, Project, Branch, Uptime, Activity.
-              (should (= (length cols) 6))
+              (should (= (length cols)
+                         (length claude-code-ide-status--columns)))
               (should (string-match-p "proj-live" (aref cols 2))))
             ;; The named instance is distinguishable in the Instance column.
             (should (seq-find (lambda (entry)
@@ -4249,6 +4250,12 @@ one project are told apart."
                     (claude-code-ide-status--project-label
                      "/Users/x/Develop/kycsystems/mtbeacon"))
                    "mtbeacon"))
+    ;; Claude Code's own `--worktree' nests the container inside .claude/,
+    ;; so the repository is two levels above, not one.
+    (should (equal (substring-no-properties
+                    (claude-code-ide-status--project-label
+                     "/Users/x/src/myrepo/.claude/worktrees/feat-x/"))
+                   "myrepo/feat-x"))
     ;; The full path stays reachable, so shortening loses nothing.
     (should (equal (get-text-property
                     0 'help-echo
@@ -4262,6 +4269,83 @@ one project are told apart."
                     (claude-code-ide-status--project-label
                      "/Users/x/Develop/kycsystems/kycsitescan/.worktrees/3919-ip-api/"))
                    "3919-ip-api"))))
+
+(ert-deftest claude-code-ide-test-status-numeric-columns-sort-numerically ()
+  "Rendered numbers sort by value, not by their text.
+Sorted as strings these columns misorder outright: \"1.3M\" lands before
+\"195.8k\" and \"9s\" after \"45m\".  Each cell carries the underlying number
+as a `sort-key', and a cell without one sorts last so unknowns do not
+crowd the head of the list."
+  ;; Token counts.
+  (let* ((cells (mapcar #'claude-code-ide-status--format-tokens
+                        '(1300000 195800 392600 818800)))
+         (entries (mapcar (lambda (c) (list nil (vector c))) cells))
+         (sorted (sort (copy-sequence entries)
+                       (claude-code-ide-status--sort-by-key 0))))
+    ;; Text order would have put 1.3M first; value order puts it last.
+    (should (equal (mapcar (lambda (e) (substring-no-properties (aref (cadr e) 0))) sorted)
+                   '("195.8k" "392.6k" "818.8k" "1.3M"))))
+  ;; Durations, including the "now" case and an unknown.
+  (let* ((cells (list (propertize "45m" 'sort-key 2700)
+                      (propertize "9s" 'sort-key 9)
+                      (propertize "3d02h" 'sort-key 266400)
+                      "—"))
+         (entries (mapcar (lambda (c) (list nil (vector c))) cells))
+         (sorted (sort (copy-sequence entries)
+                       (claude-code-ide-status--sort-by-key 0))))
+    (should (equal (mapcar (lambda (e) (substring-no-properties (aref (cadr e) 0))) sorted)
+                   '("9s" "45m" "3d02h" "—"))))
+  ;; A session producing output right now is zero seconds ago.
+  (should (= (claude-code-ide-status--sort-key (propertize "now" 'sort-key 0)) 0))
+  ;; No tokens is a known zero, not an unknown.
+  (should (= (claude-code-ide-status--sort-key
+              (claude-code-ide-status--format-tokens 0))
+             0)))
+
+(ert-deftest claude-code-ide-test-status-format-tokens ()
+  "Token counts render compactly, and nothing renders as a dash."
+  (should (equal (claude-code-ide-status--format-tokens nil) "—"))
+  (should (equal (claude-code-ide-status--format-tokens 0) "—"))
+  (should (equal (claude-code-ide-status--format-tokens 411) "411"))
+  (should (equal (claude-code-ide-status--format-tokens 12400) "12.4k"))
+  (should (equal (claude-code-ide-status--format-tokens 1200000) "1.2M")))
+
+(ert-deftest claude-code-ide-test-status-scan-output-tokens ()
+  "Output tokens accumulate, reading only bytes appended since last scan.
+Transcripts reach several megabytes, so a re-read on every refresh would
+be too costly; the scan keeps a byte cursor.  A partial trailing line,
+which occurs while Claude is mid-write, must not be consumed twice."
+  (let ((file (make-temp-file "ccide-tokens-" nil ".jsonl")))
+    (unwind-protect
+        (progn
+          (clrhash claude-code-ide-status--output-tokens)
+          ;; Cache reads dwarf output and must not be counted.
+          (with-temp-file file
+            (insert "{\"usage\":{\"output_tokens\":100,\"cache_read_input_tokens\":99999}}\n"
+                    "{\"usage\":{\"output_tokens\":50,\"input_tokens\":7}}\n"))
+          (should (= (claude-code-ide-status--scan-output-tokens file) 150))
+          ;; Re-scanning without new bytes must not double-count.
+          (should (= (claude-code-ide-status--scan-output-tokens file) 150))
+          ;; Only the appended record is added.
+          (with-temp-buffer
+            (insert "{\"usage\":{\"output_tokens\":25}}\n")
+            (append-to-file (point-min) (point-max) file))
+          (should (= (claude-code-ide-status--scan-output-tokens file) 175))
+          ;; A partial line is left for the next scan, then counted once.
+          (with-temp-buffer
+            (insert "{\"usage\":{\"output_tokens\":9")
+            (append-to-file (point-min) (point-max) file))
+          (should (= (claude-code-ide-status--scan-output-tokens file) 175))
+          (with-temp-buffer
+            (insert "99}}\n")
+            (append-to-file (point-min) (point-max) file))
+          (should (= (claude-code-ide-status--scan-output-tokens file) 1174))
+          ;; A shorter file is a different session; the total restarts.
+          (with-temp-file file
+            (insert "{\"usage\":{\"output_tokens\":5}}\n"))
+          (should (= (claude-code-ide-status--scan-output-tokens file) 5)))
+      (delete-file file)
+      (clrhash claude-code-ide-status--output-tokens))))
 
 (ert-deftest claude-code-ide-test-status-column-arity-agrees ()
   "The header list and every row producer agree on the column count.

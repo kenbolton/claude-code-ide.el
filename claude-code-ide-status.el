@@ -393,7 +393,7 @@ attending to it, so any explicit waiting flag is dropped."
 Shared by the State column labels and the mode-line breakdown badge.")
 
 (defconst claude-code-ide-status--columns
-  ["State" "Instance" "Project" "Branch" "Uptime" "Last output"]
+  ["State" "Instance" "Project" "Branch" "Last output" "Tokens" "Uptime"]
   "Header labels for the status columns, in order.")
 
 (defun claude-code-ide-status--state-label (state)
@@ -443,6 +443,15 @@ of one repository are running at once."
               (let* ((repo (file-name-directory (directory-file-name container)))
                      (repo-name (and repo (file-name-nondirectory
                                            (directory-file-name repo)))))
+                ;; Claude Code's own `--worktree' puts worktrees in
+                ;; <repo>/.claude/worktrees/, so the directory above the
+                ;; container is Claude's own state directory rather than the
+                ;; repository.  Step over it to name the repository.
+                (when (equal repo-name ".claude")
+                  (setq repo (and repo (file-name-directory
+                                        (directory-file-name repo)))
+                        repo-name (and repo (file-name-nondirectory
+                                             (directory-file-name repo)))))
                 (if (and repo-name (not (string-empty-p repo-name)))
                     (format "%s/%s" repo-name leaf)
                   leaf))
@@ -454,8 +463,10 @@ of one repository are running at once."
   "Return how long SESSION's Claude process has run, or \"\" if unknown."
   (or (when-let* ((pid (claude-code-ide-mcp-session-cli-pid session))
                   (attrs (ignore-errors (process-attributes pid)))
-                  (etime (alist-get 'etime attrs)))
-        (claude-code-ide-status--format-duration (float-time etime)))
+                  (etime (alist-get 'etime attrs))
+                  (seconds (float-time etime)))
+        (propertize (claude-code-ide-status--format-duration seconds)
+                    'sort-key seconds))
       ""))
 
 (defun claude-code-ide-status--last-output-string (session)
@@ -467,18 +478,23 @@ Deliberately a duration and nothing else.  The State column already names
 what an instance is doing, so repeating `working' or `idle' here would say
 the same thing twice; the elapsed time is the part State cannot express."
   (cond
-   ((claude-code-ide-status--busy-p session) "now")
+   ;; Producing output right now is zero seconds ago, so it sorts first.
+   ((claude-code-ide-status--busy-p session) (propertize "now" 'sort-key 0))
    ((when-let* ((id (claude-code-ide-mcp-session-session-id session))
                 (entry (gethash id claude-code-ide-status--activity)))
       (and (> (cdr entry) 0)
-           (claude-code-ide-status--format-duration
-            (- (float-time) (cdr entry))))))
+           (let ((elapsed (- (float-time) (cdr entry))))
+             (propertize (claude-code-ide-status--format-duration elapsed)
+                         'sort-key elapsed)))))
    (t "—")))
 
 (defun claude-code-ide-status--ago-string (time)
-  "Return a compact \"N ago\" string for TIME."
-  (concat (claude-code-ide-status--format-duration (- (float-time) (float-time time)))
-          " ago"))
+  "Return a compact \"N ago\" string for TIME.
+Shares the Last output column with live rows, so it carries the same
+`sort-key' property and the two kinds of row interleave correctly."
+  (let ((elapsed (- (float-time) (float-time time))))
+    (propertize (concat (claude-code-ide-status--format-duration elapsed) " ago")
+                'sort-key elapsed)))
 
 (defun claude-code-ide-status--state-rank (state)
   "Return a sort key for STATE, most urgent first."
@@ -491,6 +507,22 @@ the same thing twice; the elapsed time is the part State cannot express."
     ('disconnected 5)
     ('resume 6)
     (_ 7)))
+
+(defun claude-code-ide-status--sort-key (cell)
+  "Return CELL's numeric sort key.
+Duration and count columns are rendered for people -- \"1.3M\", \"3d02h\" --
+and those strings do not order the way the numbers do: sorted as text,
+\"1.3M\" lands before \"195.8k\" and \"9s\" after \"45m\".  Each such cell
+carries the underlying number as a `sort-key' property, and cells with no
+number sort last so unknowns do not crowd the head of the list."
+  (or (and (stringp cell) (get-text-property 0 'sort-key cell))
+      most-positive-fixnum))
+
+(defun claude-code-ide-status--sort-by-key (column)
+  "Return a predicate sorting entries by the `sort-key' of COLUMN."
+  (lambda (a b)
+    (< (claude-code-ide-status--sort-key (aref (cadr a) column))
+       (claude-code-ide-status--sort-key (aref (cadr b) column)))))
 
 (defun claude-code-ide-status--sort-by-state (a b)
   "Sort entries A and B by the urgency rank on their State cell.
@@ -518,13 +550,75 @@ waiting, idle, and disconnected."
                                   (claude-code-ide-session-name session)
                                   (claude-code-ide-status--project-label dir)
                                   branch
-                                  (claude-code-ide-status--uptime-string session)
-                                  (claude-code-ide-status--last-output-string session))))
+                                  (claude-code-ide-status--last-output-string session)
+                                  (claude-code-ide-status--output-string dir)
+                                  (claude-code-ide-status--uptime-string session))))
               rows)))
     (mapcar #'cdr
             (sort rows (lambda (a b)
                          (< (claude-code-ide-status--state-rank (car a))
                             (claude-code-ide-status--state-rank (car b))))))))
+
+;;; Output-token accounting
+;; Claude writes one JSONL transcript per session under
+;; `claude-code-ide-status-projects-directory', and every assistant message
+;; carries a `usage' object.  Only `output_tokens' is totalled: cache reads
+;; outnumber it by orders of magnitude while costing a fraction, so a summed
+;; figure would be dominated by the cheapest component and misrepresent the
+;; work done.  Turning tokens into money is left alone deliberately -- it
+;; needs a per-model price table that goes stale without saying so.
+
+(defvar claude-code-ide-status--output-tokens (make-hash-table :test 'equal)
+  "Maps a transcript path to (BYTE-CURSOR . OUTPUT-TOKEN-TOTAL).
+Transcripts reach several megabytes and only ever grow at the end, so each
+poll reads from the recorded cursor rather than re-reading the file.")
+
+(defun claude-code-ide-status--newest-transcript (project-subdir)
+  "Return the most recently modified transcript in PROJECT-SUBDIR, or nil."
+  (when-let* ((files (directory-files project-subdir t "\\.jsonl\\'" t)))
+    (car (sort files
+               (lambda (a b)
+                 (time-less-p (nth 5 (file-attributes b))
+                              (nth 5 (file-attributes a))))))))
+
+(defun claude-code-ide-status--scan-output-tokens (file)
+  "Return the running total of `output_tokens' in FILE.
+Reads only the bytes appended since the last call.  A trailing partial
+line, which happens while Claude is mid-write, is left unconsumed so the
+cursor never lands inside a record."
+  (let* ((entry (gethash file claude-code-ide-status--output-tokens))
+         (cursor (or (car entry) 0))
+         (total (or (cdr entry) 0))
+         (size (or (nth 7 (file-attributes file)) 0)))
+    ;; A shorter file is a different session reusing the name; start over.
+    (when (< size cursor)
+      (setq cursor 0 total 0))
+    (when (> size cursor)
+      (with-temp-buffer
+        (insert-file-contents file nil cursor size)
+        (goto-char (point-max))
+        ;; Consume whole lines only.
+        (let ((last-newline (if (re-search-backward "\n" nil t) (1+ (point)) nil)))
+          (when last-newline
+            (setq cursor (+ cursor (1- last-newline)))
+            (narrow-to-region (point-min) last-newline)
+            (goto-char (point-min))
+            (while (re-search-forward "\"output_tokens\":[[:space:]]*\\([0-9]+\\)" nil t)
+              (setq total (+ total (string-to-number (match-string 1)))))))))
+    (puthash file (cons cursor total) claude-code-ide-status--output-tokens)
+    total))
+
+(defun claude-code-ide-status--format-tokens (n)
+  "Format token count N compactly, as in \"12.4k\" or \"1.2M\".
+The count rides along as a `sort-key' property, since the rendered string
+does not sort the way the number does."
+  (let ((text (cond ((null n) "—")
+                    ((zerop n) "—")
+                    ((< n 1000) (number-to-string n))
+                    ((< n 1000000) (format "%.1fk" (/ n 1000.0)))
+                    (t (format "%.1fM" (/ n 1000000.0))))))
+    ;; No tokens is a known zero, not an unknown, so it sorts as zero.
+    (propertize text 'sort-key (or n 0))))
 
 (defun claude-code-ide-status--project-cwd (project-subdir)
   "Return the working directory recorded in PROJECT-SUBDIR, or nil.
@@ -544,6 +638,47 @@ from the directory name, whose slash-to-dash encoding is lossy."
       (goto-char (point-min))
       (when (re-search-forward "\"cwd\":[[:space:]]*\"\\([^\"]+\\)\"" nil t)
         (file-name-as-directory (match-string 1))))))
+
+(defvar claude-code-ide-status--resume-cache nil
+  "Cached list of resumable-project rows, most recently active first.
+Each element is a `tabulated-list-mode' entry for every project on disk,
+before live sessions are excluded.  Rebuilt by
+`claude-code-ide-status--build-resume-rows'.")
+
+(defvar claude-code-ide-status--resume-cache-time 0
+  "`float-time' at which `claude-code-ide-status--resume-cache' was built.")
+
+(defvar claude-code-ide-status--transcript-map (make-hash-table :test 'equal)
+  "Maps a project directory to the newest transcript recording work there.")
+
+(defvar claude-code-ide-status--transcript-map-time 0
+  "When `claude-code-ide-status--transcript-map' was last rebuilt.")
+
+(defun claude-code-ide-status--transcript-for (dir)
+  "Return the newest transcript recording work in DIR, or nil.
+Claude's history directories encode their path lossily, so the mapping is
+recovered by reading each transcript's own `cwd'.  That walks the same
+tree as the resumable-project scan and is cached on the same cadence."
+  (when (file-directory-p claude-code-ide-status-projects-directory)
+    (when (> (- (float-time) claude-code-ide-status--transcript-map-time)
+             claude-code-ide-status-resume-cache-ttl)
+      (clrhash claude-code-ide-status--transcript-map)
+      (dolist (sub (directory-files claude-code-ide-status-projects-directory t
+                                    directory-files-no-dot-files-regexp))
+        (when (file-directory-p sub)
+          (when-let* ((cwd (claude-code-ide-status--project-cwd sub))
+                      (file (claude-code-ide-status--newest-transcript sub)))
+            (puthash (claude-code-ide-status--normalize-dir cwd) file
+                     claude-code-ide-status--transcript-map))))
+      (setq claude-code-ide-status--transcript-map-time (float-time)))
+    (gethash (claude-code-ide-status--normalize-dir dir)
+             claude-code-ide-status--transcript-map)))
+
+(defun claude-code-ide-status--output-string (dir)
+  "Return the output tokens produced by the session in DIR, formatted."
+  (claude-code-ide-status--format-tokens
+   (when-let* ((file (claude-code-ide-status--transcript-for dir)))
+     (claude-code-ide-status--scan-output-tokens file))))
 
 (defvar claude-code-ide-status--resume-cache nil
   "Cached list of resumable-project rows, most recently active first.
@@ -576,8 +711,9 @@ result rather than repeating it; see `claude-code-ide-status--resume-entries'."
                          ""                    ; Instance — none running
                          (claude-code-ide-status--project-label dir)
                          (or (claude-code-ide-status--branch dir) "—")
-                         ""                    ; Uptime — not running
-                         (claude-code-ide-status--ago-string mtime)))))  ; Last output
+                         (claude-code-ide-status--ago-string mtime)  ; Last output
+                         (claude-code-ide-status--output-string dir)
+                         ""))))                ; Uptime — not running
        rows))))
 
 (defun claude-code-ide-status--resume-entries (exclude)
@@ -654,9 +790,13 @@ avoid rebuilding it again during printing."
                     (claude-code-ide-status--column-width entries col header)
                     ;; The State column sorts by urgency rank, the rest by
                     ;; their string value.
-                    (if (equal header "State")
-                        #'claude-code-ide-status--sort-by-state
-                      t)))
+                    (cond
+                     ((equal header "State")
+                      #'claude-code-ide-status--sort-by-state)
+                     ;; Rendered numbers, so sort on the number not the text.
+                     ((member header '("Last output" "Tokens" "Uptime"))
+                      (claude-code-ide-status--sort-by-key col))
+                     (t t))))
             claude-code-ide-status--columns)))
     (tabulated-list-init-header)))
 
@@ -761,7 +901,7 @@ diff, blocked on your input, or a finished turn), followed by resumable
 projects from Claude's on-disk history."
   (setq tabulated-list-format
         [("State" 14 t) ("Instance" 20 t) ("Project" 34 t) ("Branch" 18 t)
-         ("Uptime" 8 t) ("Last output" 12 t)]
+         ("Last output" 12 t) ("Tokens" 8 t) ("Uptime" 8 t)]
         tabulated-list-entries #'claude-code-ide-status--entries
         tabulated-list-padding 1
         ;; Draw the column header as the first buffer line, but make it
