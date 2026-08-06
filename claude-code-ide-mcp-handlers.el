@@ -399,7 +399,9 @@ ARGUMENTS should contain:
                      old-file-path new-file-contents tab-name))
            (buffer-A (car buffers))
            (buffer-B (cdr buffers))
-           (file-exists (file-exists-p old-file-path)))
+           (file-exists (file-exists-p old-file-path))
+           (original-read-only (and buffer-A
+                                    (buffer-local-value 'buffer-read-only buffer-A))))
 
       ;; Store diff session info with session reference
       (let ((active-diffs (claude-code-ide-mcp--get-active-diffs session)))
@@ -409,6 +411,7 @@ ARGUMENTS should contain:
                    (old-file-path . ,old-file-path)
                    (new-file-path . ,new-file-path)
                    (file-exists . ,file-exists)
+                   (original-read-only . ,original-read-only)
                    (saved-winconf . ,saved-winconf)
                    (session . ,session)  ; Store the session reference
                    (created-at . ,(current-time)))
@@ -473,7 +476,8 @@ lexically, and diff-info's stored session serves as a backstop."
         ;; Already cleaned up, just exit
         nil
       ;; Process the diff
-      (let* ((buffer-B (alist-get 'buffer-B diff-info))
+      (let* ((buffer-A (alist-get 'buffer-A diff-info))
+             (buffer-B (alist-get 'buffer-B diff-info))
              (final-session (or session
                                 (alist-get 'session diff-info))))
 
@@ -485,6 +489,14 @@ lexically, and diff-info's stored session serves as a backstop."
           ;; Defer the response to ensure ediff cleanup completes first
           (run-with-idle-timer claude-code-ide-mcp-handlers-idle-timer-delay nil
                                (lambda ()
+                                 ;; Restore buffer-A's read-only state on either
+                                 ;; answer.  This quit handling bypasses ediff's
+                                 ;; own restoration, and a buffer the user keeps
+                                 ;; read-only must stay so.
+                                 (when (and buffer-A (buffer-live-p buffer-A))
+                                   (with-current-buffer buffer-A
+                                     (setq buffer-read-only
+                                           (alist-get 'original-read-only diff-info))))
                                  (if accept-changes
                                      ;; User accepted changes
                                      (let ((final-content (with-current-buffer buffer-B
@@ -531,6 +543,7 @@ lexically, and diff-info's stored session serves as a backstop."
             (buffer-B (alist-get 'buffer-B diff-info))
             (control-buf (alist-get 'control-buffer diff-info))
             (file-exists (alist-get 'file-exists diff-info))
+            (original-read-only (alist-get 'original-read-only diff-info))
             ;; First try to get buffers from diff-info (stored during close_tab)
             (error-buffer (alist-get 'error-buffer diff-info))
             (diff-buffer (alist-get 'diff-buffer diff-info))
@@ -559,6 +572,11 @@ lexically, and diff-info's stored session serves as a backstop."
         ;; Kill the temporary buffer (buffer B)
         (when (and buffer-B (buffer-live-p buffer-B))
           (kill-buffer buffer-B))
+        ;; An existing file's buffer outlives the diff, so put its
+        ;; read-only state back the way the user had it.
+        (when (and buffer-A (buffer-live-p buffer-A) file-exists)
+          (with-current-buffer buffer-A
+            (setq buffer-read-only original-read-only)))
         ;; Kill buffer A only if it was created for a new file
         (when (and buffer-A (buffer-live-p buffer-A) (not file-exists))
           ;; This is a *New file: buffer that we created
