@@ -353,7 +353,7 @@ attending to it, so any explicit waiting flag is dropped."
 Shared by the State column labels and the mode-line breakdown badge.")
 
 (defconst claude-code-ide-status--columns
-  ["State" "Project" "Branch" "Uptime" "Output" "Last output"]
+  ["State" "Project" "Branch" "Last output" "Tokens" "Uptime"]
   "Header labels for the status columns, in order.")
 
 (defun claude-code-ide-status--state-label (state)
@@ -423,8 +423,10 @@ of one repository are running at once."
   "Return how long the Claude process in DIR has run, or \"\" if unknown."
   (or (when-let* ((pid (claude-code-ide-mcp-session-cli-pid-for dir))
                   (attrs (ignore-errors (process-attributes pid)))
-                  (etime (alist-get 'etime attrs)))
-        (claude-code-ide-status--format-duration (float-time etime)))
+                  (etime (alist-get 'etime attrs))
+                  (seconds (float-time etime)))
+        (propertize (claude-code-ide-status--format-duration seconds)
+                    'sort-key seconds))
       ""))
 
 (defun claude-code-ide-status--last-output-string (dir)
@@ -436,17 +438,22 @@ Deliberately a duration and nothing else.  The State column already names
 what a session is doing, so repeating `working' or `idle' here would say
 the same thing twice; the elapsed time is the part State cannot express."
   (cond
-   ((claude-code-ide-status--busy-p dir) "now")
+   ;; Producing output right now is zero seconds ago, so it sorts first.
+   ((claude-code-ide-status--busy-p dir) (propertize "now" 'sort-key 0))
    ((when-let* ((entry (gethash dir claude-code-ide-status--activity)))
       (and (> (cdr entry) 0)
-           (claude-code-ide-status--format-duration
-            (- (float-time) (cdr entry))))))
+           (let ((elapsed (- (float-time) (cdr entry))))
+             (propertize (claude-code-ide-status--format-duration elapsed)
+                         'sort-key elapsed)))))
    (t "—")))
 
 (defun claude-code-ide-status--ago-string (time)
-  "Return a compact \"N ago\" string for TIME."
-  (concat (claude-code-ide-status--format-duration (- (float-time) (float-time time)))
-          " ago"))
+  "Return a compact \"N ago\" string for TIME.
+Shares the Last output column with live rows, so it carries the same
+`sort-key' property and the two kinds of row interleave correctly."
+  (let ((elapsed (- (float-time) (float-time time))))
+    (propertize (concat (claude-code-ide-status--format-duration elapsed) " ago")
+                'sort-key elapsed)))
 
 (defun claude-code-ide-status--state-rank (state)
   "Return a sort key for STATE, most urgent first."
@@ -459,6 +466,22 @@ the same thing twice; the elapsed time is the part State cannot express."
     ('disconnected 5)
     ('resume 6)
     (_ 7)))
+
+(defun claude-code-ide-status--sort-key (cell)
+  "Return CELL's numeric sort key.
+Duration and count columns are rendered for people -- \"1.3M\", \"3d02h\" --
+and those strings do not order the way the numbers do: sorted as text,
+\"1.3M\" lands before \"195.8k\" and \"9s\" after \"45m\".  Each such cell
+carries the underlying number as a `sort-key' property, and cells with no
+number sort last so unknowns do not crowd the head of the list."
+  (or (and (stringp cell) (get-text-property 0 'sort-key cell))
+      most-positive-fixnum))
+
+(defun claude-code-ide-status--sort-by-key (column)
+  "Return a predicate sorting entries by the `sort-key' of COLUMN."
+  (lambda (a b)
+    (< (claude-code-ide-status--sort-key (aref (cadr a) column))
+       (claude-code-ide-status--sort-key (aref (cadr b) column)))))
 
 (defun claude-code-ide-status--sort-by-state (a b)
   "Sort entries A and B by the urgency rank on their State cell.
@@ -481,9 +504,9 @@ waiting, idle, and disconnected."
                           (vector (claude-code-ide-status--state-label state)
                                   (claude-code-ide-status--project-label dir)
                                   branch
-                                  (claude-code-ide-status--uptime-string dir)
+                                  (claude-code-ide-status--last-output-string dir)
                                   (claude-code-ide-status--output-string dir)
-                                  (claude-code-ide-status--last-output-string dir))))
+                                  (claude-code-ide-status--uptime-string dir))))
               rows)))
     (mapcar #'cdr
             (sort rows (lambda (a b)
@@ -540,12 +563,16 @@ cursor never lands inside a record."
     total))
 
 (defun claude-code-ide-status--format-tokens (n)
-  "Format token count N compactly, as in \"12.4k\" or \"1.2M\"."
-  (cond ((null n) "—")
-        ((zerop n) "—")
-        ((< n 1000) (number-to-string n))
-        ((< n 1000000) (format "%.1fk" (/ n 1000.0)))
-        (t (format "%.1fM" (/ n 1000000.0)))))
+  "Format token count N compactly, as in \"12.4k\" or \"1.2M\".
+The count rides along as a `sort-key' property, since the rendered string
+does not sort the way the number does."
+  (let ((text (cond ((null n) "—")
+                    ((zerop n) "—")
+                    ((< n 1000) (number-to-string n))
+                    ((< n 1000000) (format "%.1fk" (/ n 1000.0)))
+                    (t (format "%.1fM" (/ n 1000000.0))))))
+    ;; No tokens is a known zero, not an unknown, so it sorts as zero.
+    (propertize text 'sort-key (or n 0))))
 
 (defun claude-code-ide-status--project-cwd (project-subdir)
   "Return the working directory recorded in PROJECT-SUBDIR, or nil.
@@ -628,9 +655,9 @@ result rather than repeating it; see `claude-code-ide-status--resume-entries'."
                  (vector (claude-code-ide-status--state-label 'resume)
                          (claude-code-ide-status--project-label dir)
                          (or (claude-code-ide-status--branch dir) "—")
-                         ""                    ; Uptime — not running
+                         (claude-code-ide-status--ago-string mtime)  ; Last output
                          (claude-code-ide-status--output-string dir)
-                         (claude-code-ide-status--ago-string mtime)))))  ; Last output
+                         ""))))                ; Uptime — not running
        rows))))
 
 (defun claude-code-ide-status--resume-entries (exclude)
@@ -707,9 +734,13 @@ avoid rebuilding it again during printing."
                     (claude-code-ide-status--column-width entries col header)
                     ;; The State column sorts by urgency rank, the rest by
                     ;; their string value.
-                    (if (equal header "State")
-                        #'claude-code-ide-status--sort-by-state
-                      t)))
+                    (cond
+                     ((equal header "State")
+                      #'claude-code-ide-status--sort-by-state)
+                     ;; Rendered numbers, so sort on the number not the text.
+                     ((member header '("Last output" "Tokens" "Uptime"))
+                      (claude-code-ide-status--sort-by-key col))
+                     (t t))))
             claude-code-ide-status--columns)))
     (tabulated-list-init-header)))
 
@@ -808,7 +839,7 @@ diff, blocked on your input, or a finished turn), followed by resumable
 projects from Claude's on-disk history."
   (setq tabulated-list-format
         [("State" 14 t) ("Project" 40 t) ("Branch" 18 t)
-         ("Uptime" 8 t) ("Output" 8 t) ("Last output" 12 t)]
+         ("Last output" 12 t) ("Tokens" 8 t) ("Uptime" 8 t)]
         tabulated-list-entries #'claude-code-ide-status--entries
         tabulated-list-padding 1
         ;; Draw the column header as the first buffer line, but make it

@@ -3706,6 +3706,38 @@ and make `cursor-sensor' try to move point off a fresh window (signalling
     (should-not (claude-code-ide-mcp-session-pending-permissions "/tmp/none/"))
     (should-not (claude-code-ide-mcp-session-cli-pid-for "/tmp/none/"))))
 
+(ert-deftest claude-code-ide-test-status-numeric-columns-sort-numerically ()
+  "Rendered numbers sort by value, not by their text.
+Sorted as strings these columns misorder outright: \"1.3M\" lands before
+\"195.8k\" and \"9s\" after \"45m\".  Each cell carries the underlying number
+as a `sort-key', and a cell without one sorts last so unknowns do not
+crowd the head of the list."
+  ;; Token counts.
+  (let* ((cells (mapcar #'claude-code-ide-status--format-tokens
+                        '(1300000 195800 392600 818800)))
+         (entries (mapcar (lambda (c) (list nil (vector c))) cells))
+         (sorted (sort (copy-sequence entries)
+                       (claude-code-ide-status--sort-by-key 0))))
+    ;; Text order would have put 1.3M first; value order puts it last.
+    (should (equal (mapcar (lambda (e) (substring-no-properties (aref (cadr e) 0))) sorted)
+                   '("195.8k" "392.6k" "818.8k" "1.3M"))))
+  ;; Durations, including the "now" case and an unknown.
+  (let* ((cells (list (propertize "45m" 'sort-key 2700)
+                      (propertize "9s" 'sort-key 9)
+                      (propertize "3d02h" 'sort-key 266400)
+                      "—"))
+         (entries (mapcar (lambda (c) (list nil (vector c))) cells))
+         (sorted (sort (copy-sequence entries)
+                       (claude-code-ide-status--sort-by-key 0))))
+    (should (equal (mapcar (lambda (e) (substring-no-properties (aref (cadr e) 0))) sorted)
+                   '("9s" "45m" "3d02h" "—"))))
+  ;; A session producing output right now is zero seconds ago.
+  (should (= (claude-code-ide-status--sort-key (propertize "now" 'sort-key 0)) 0))
+  ;; No tokens is a known zero, not an unknown.
+  (should (= (claude-code-ide-status--sort-key
+              (claude-code-ide-status--format-tokens 0))
+             0)))
+
 (ert-deftest claude-code-ide-test-status-format-tokens ()
   "Token counts render compactly, and nothing renders as a dash."
   (should (equal (claude-code-ide-status--format-tokens nil) "—"))
