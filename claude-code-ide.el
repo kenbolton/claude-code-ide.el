@@ -1471,10 +1471,11 @@ Signals an error if terminal fails to initialize."
              (ignore-errors (kill-buffer created-buffer))))
          (signal (car err) (cdr err)))))))
 
-(defun claude-code-ide--start-session (&optional continue resume)
+(defun claude-code-ide--start-session (&optional continue resume directory)
   "Start a new Claude Code instance for the current project.
 If CONTINUE is non-nil, start Claude with the -c (continue) flag.
 If RESUME is non-nil, start Claude with the -r (resume) flag.
+If DIRECTORY is non-nil, start there instead of at the project root.
 
 Always creates a new instance; a project may run any number of them
 concurrently.  When the project already has instances (or with a
@@ -1494,7 +1495,7 @@ This function handles:
   ;; Ensure the selected terminal backend is available before starting MCP
   (claude-code-ide--terminal-ensure-backend)
 
-  (let* ((working-dir (claude-code-ide--get-working-directory))
+  (let* ((working-dir (or directory (claude-code-ide--get-working-directory)))
          ;; Additional instances get an optional name; a prefix argument
          ;; offers the prompt for the first instance too
          (instance-name (when (or (claude-code-ide-mcp--sessions-for-project working-dir)
@@ -1625,6 +1626,21 @@ to reach running instances."
   (claude-code-ide--start-session))
 
 ;;;###autoload
+(defun claude-code-ide-in-directory (directory)
+  "Start a Claude Code instance in DIRECTORY, ignoring the project root.
+`claude-code-ide' starts at the project root; this starts wherever you
+point it, which is what a subdirectory, a scratch tree, or a path outside
+any project needs.
+
+This was `claude-code-ide''s prefix argument before the prefix came to
+mean \"name this instance\".  Two capabilities, two commands, rather than
+one key with two meanings."
+  (interactive (list (read-directory-name "Start Claude Code in: "
+                                          default-directory nil t)))
+  (claude-code-ide--start-session
+   nil nil (file-name-as-directory (expand-file-name directory))))
+
+;;;###autoload
 (defun claude-code-ide-resume ()
   "Resume Claude Code in a new instance for the current project or directory.
 This starts Claude with the -r (resume) flag to continue a previous
@@ -1685,7 +1701,10 @@ With prefix argument ALL-PROJECTS, stop the instances of all projects."
                      (claude-code-ide--get-working-directory)))))
     (if (null sessions)
         (claude-code-ide-log "No Claude Code sessions to stop")
-      (when (y-or-n-p (if all-projects
+      ;; A full yes/no, not a keystroke: this ends running work, and
+      ;; `use-short-answers' must not weaken it.
+      (when (let ((use-short-answers nil))
+              (yes-or-no-p (if all-projects
                           (format "Stop all %d Claude Code instance%s? "
                                   (length sessions)
                                   (if (cdr sessions) "s" ""))
@@ -1694,7 +1713,7 @@ With prefix argument ALL-PROJECTS, stop the instances of all projects."
                                 (if (cdr sessions) "s" "")
                                 (file-name-nondirectory
                                  (directory-file-name
-                                  (claude-code-ide--get-working-directory))))))
+                                  (claude-code-ide--get-working-directory)))))))
         ;; One instance's teardown error must not strand the rest
         (dolist (session sessions)
           (condition-case err

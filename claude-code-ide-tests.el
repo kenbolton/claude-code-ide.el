@@ -3700,7 +3700,9 @@ and pruning drops entries whose tab no longer exists."
               (other (claude-code-ide-tests--make-session "/tmp/claude-stop-other/")))
           (cl-letf (((symbol-function 'claude-code-ide--get-working-directory)
                      (lambda () project-dir))
-                    ((symbol-function 'y-or-n-p) (lambda (&rest _) confirm))
+                    ;; The prompt is a full yes/no, deliberately, so that
+                    ;; `use-short-answers' cannot reduce it to one keystroke.
+                    ((symbol-function 'yes-or-no-p) (lambda (&rest _) confirm))
                     ((symbol-function 'claude-code-ide--cleanup-session)
                      (lambda (session) (push session cleaned))))
             ;; Declining leaves everything running
@@ -5036,6 +5038,48 @@ The header is checked by name because it is the one that regressed."
                            (get 'claude-code-ide-menu 'transient--layout)))))
     (should header)
     (should (cdr header))))
+
+(ert-deftest claude-code-ide-test-stop-all-requires-full-confirmation ()
+  "`stop-all' asks a full yes/no even when short answers are enabled.
+Upstream asks with `y-or-n-p', so a single stray keystroke ends every
+instance in the project.  This fork keeps the deliberate prompt, and
+binds `use-short-answers' to nil so the option cannot weaken it."
+  (claude-code-ide-tests--clear-processes)
+  (unwind-protect
+      (let ((asked nil))
+        (claude-code-ide-tests--make-session default-directory)
+        (cl-letf (((symbol-function 'yes-or-no-p)
+                   (lambda (&rest _) (setq asked (list :short use-short-answers)) nil))
+                  ((symbol-function 'y-or-n-p)
+                   (lambda (&rest _) (setq asked :weak-prompt) t)))
+          (let ((use-short-answers t))
+            (claude-code-ide-stop-all))
+          ;; The strong prompt was used...
+          (should (listp asked))
+          ;; ...and short answers were suppressed for it.
+          (should-not (plist-get asked :short))))
+    (claude-code-ide-tests--clear-processes)))
+
+(ert-deftest claude-code-ide-test-in-directory-overrides-project-root ()
+  "`claude-code-ide-in-directory' starts where told, not at the project root.
+This capability used to live on `claude-code-ide''s prefix argument,
+which now names the instance instead."
+  (let ((started nil))
+    ;; Stub beneath `--start-session', not the function itself: stubbing it
+    ;; would only prove the command passes a directory, not that session
+    ;; creation uses it in place of the project root.
+    (cl-letf (((symbol-function 'claude-code-ide--get-working-directory)
+               (lambda () "/tmp/some-project/"))
+              ((symbol-function 'claude-code-ide--ensure-cli) (lambda () t))
+              ((symbol-function 'claude-code-ide--cleanup-dead-sessions) (lambda () nil))
+              ((symbol-function 'claude-code-ide--read-instance-name) (lambda (&rest _) nil))
+              ((symbol-function 'claude-code-ide--generate-session-id)
+               (lambda (working-dir) (setq started working-dir) (error "stop here"))))
+      (ignore-errors (claude-code-ide-in-directory "/tmp/elsewhere/sub"))
+      ;; Session creation saw the chosen directory, normalized...
+      (should (equal started "/tmp/elsewhere/sub/"))
+      ;; ...and not the project root.
+      (should-not (equal started "/tmp/some-project/")))))
 
 (provide 'claude-code-ide-tests)
 
