@@ -752,6 +752,17 @@ INSTANCE-NAME always yields the plain single-instance name."
           (concat (substring base 0 -2) ":" instance-name "]*"))
          (t (format "%s<%s>" base instance-name)))))))
 
+(defun claude-code-ide--generate-cli-session-id ()
+  "Return a fresh UUID naming the CLI's own session.
+Passed to the CLI as `--session-id', which requires a UUID.  Claude names
+each transcript after this id, so it is also the only reliable way to
+attribute a transcript -- and therefore token usage -- to one instance
+rather than to a project that may be running several."
+  (let ((v (secure-hash 'sha256 (format "%s-%s-%s" (random) (float-time) (emacs-pid)))))
+    (format "%s-%s-4%s-a%s-%s"
+            (substring v 0 8) (substring v 8 12) (substring v 13 16)
+            (substring v 17 20) (substring v 20 32))))
+
 (defun claude-code-ide--generate-session-id (working-dir)
   "Generate a unique session ID for a new instance in WORKING-DIR."
   (format "claude-%s-%s-%d"
@@ -1197,11 +1208,14 @@ If the window is not visible, it will be shown in a side window."
           (setf (claude-code-ide-mcp-session-original-tab session) (tab-bar--current-tab)))
         (claude-code-ide-debug "Claude Code window shown")))))
 
-(defun claude-code-ide--build-claude-command (&optional continue resume session-id)
+(defun claude-code-ide--build-claude-command (&optional continue resume session-id cli-session-id)
   "Build the Claude command with optional flags.
 If CONTINUE is non-nil, add the -c flag.
 If RESUME is non-nil, add the -r flag.
 If SESSION-ID is provided, it's included in the MCP server URL path.
+CLI-SESSION-ID, when given, is passed as --session-id so the CLI names
+its transcript after it.  It is omitted when resuming or continuing,
+which reuse the original session's id.
 If `claude-code-ide-cli-debug' is non-nil, add the -d flag.
 If `claude-code-ide-system-prompt' is non-nil, add the --append-system-prompt flag.
 Additional flags from `claude-code-ide-cli-extra-flags' are also included."
@@ -1215,6 +1229,11 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
     ;; Add continue flag if requested
     (when continue
       (setq claude-cmd (concat claude-cmd " -c")))
+    ;; Name the CLI's session so its transcript can be attributed to this
+    ;; instance.  Resume and continue already carry their own id.
+    (when (and cli-session-id (not resume) (not continue))
+      (setq claude-cmd (concat claude-cmd " --session-id "
+                               (shell-quote-argument cli-session-id))))
     ;; Add append-system-prompt flag with Emacs context
     (let ((emacs-prompt "IMPORTANT: Connected to Emacs via claude-code-ide.el integration. Emacs uses mixed coordinates: Lines: 1-based (line 1 = first line), Columns: 0-based (column 0 = first column). Example: First character in file is at line 1, column 0. Available: xref (LSP), tree-sitter, imenu, project.el, flycheck/flymake diagnostics. Context-aware with automatic project/file/selection tracking.")
           (combined-prompt nil))
@@ -1327,7 +1346,7 @@ EDITOR/VISUAL inherited from the parent environment."
     (message "Claude Code IDE: ghostel is the recommended terminal backend (currently using %s) — see the README; set claude-code-ide-show-backend-recommendation to nil to hide this"
              claude-code-ide-terminal-backend)))
 
-(defun claude-code-ide--create-terminal-session (buffer-name working-dir port continue resume session-id)
+(defun claude-code-ide--create-terminal-session (buffer-name working-dir port continue resume session-id cli-session-id)
   "Create a new terminal session for Claude Code.
 BUFFER-NAME is the name for the terminal buffer.
 WORKING-DIR is the working directory.
@@ -1340,7 +1359,7 @@ Returns a cons cell of (buffer . process) on success.
 Signals an error if terminal fails to initialize."
   ;; Ensure terminal backend is available before proceeding
   (claude-code-ide--terminal-ensure-backend)
-  (let* ((claude-cmd (claude-code-ide--build-claude-command continue resume session-id))
+  (let* ((claude-cmd (claude-code-ide--build-claude-command continue resume session-id cli-session-id))
          (default-directory working-dir)
          (editor-env (claude-code-ide--editor-env-vars))
          (env-vars (append (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
@@ -1510,12 +1529,16 @@ This function handles:
                             (generate-new-buffer-name base)
                           base)))
          (session-id (claude-code-ide--generate-session-id working-dir))
+         (cli-session-id (claude-code-ide--generate-cli-session-id))
          (session nil)
          (registered nil))
     (condition-case err
         (progn
           ;; Start this instance's MCP server
           (setq session (claude-code-ide-mcp-create-session working-dir session-id instance-name))
+          ;; The CLI names its transcript after this id, which is how the
+          ;; overview attributes token usage to this instance.
+          (setf (claude-code-ide-mcp-session-cli-session-id session) cli-session-id)
           (setf (claude-code-ide-mcp-session-window-slot session)
                 (claude-code-ide--assign-window-slot working-dir))
           ;; Register with the MCP tools server BEFORE spawning the CLI so
@@ -1524,7 +1547,7 @@ This function handles:
           (setq registered t)
           (let* ((port (claude-code-ide-mcp-session-port session))
                  (buffer-and-process (claude-code-ide--create-terminal-session
-                                      buffer-name working-dir port continue resume session-id))
+                                      buffer-name working-dir port continue resume session-id cli-session-id))
                  (buffer (car buffer-and-process))
                  (process (cdr buffer-and-process)))
             (setf (claude-code-ide-mcp-session-buffer session) buffer

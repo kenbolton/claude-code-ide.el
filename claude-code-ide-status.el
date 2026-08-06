@@ -551,7 +551,7 @@ waiting, idle, and disconnected."
                                   (claude-code-ide-status--project-label dir)
                                   branch
                                   (claude-code-ide-status--last-output-string session)
-                                  (claude-code-ide-status--output-string dir)
+                                  (claude-code-ide-status--output-string dir session)
                                   (claude-code-ide-status--uptime-string session))))
               rows)))
     (mapcar #'cdr
@@ -674,11 +674,37 @@ tree as the resumable-project scan and is cached on the same cadence."
     (gethash (claude-code-ide-status--normalize-dir dir)
              claude-code-ide-status--transcript-map)))
 
-(defun claude-code-ide-status--output-string (dir)
-  "Return the output tokens produced by the session in DIR, formatted."
+(defun claude-code-ide-status--session-transcript (session)
+  "Return SESSION's own transcript, or nil when it cannot be identified.
+The CLI is started with `--session-id', and it names the transcript after
+that id, so an instance can be matched to its own file.  Falling back to
+the project's newest transcript would be wrong here: a project may run
+several instances, and they would all report the same total, taken from
+whichever session wrote last."
+  (when-let* ((id (claude-code-ide-mcp-session-cli-session-id session))
+              (dir (claude-code-ide-mcp-session-project-dir session))
+              (sub (claude-code-ide-status--project-subdir dir))
+              (file (expand-file-name (concat id ".jsonl") sub))
+              ((file-readable-p file)))
+    file))
+
+(defun claude-code-ide-status--project-subdir (dir)
+  "Return Claude's history directory recording work in DIR, or nil."
+  (when-let* ((file (claude-code-ide-status--transcript-for dir)))
+    (file-name-directory file)))
+
+(defun claude-code-ide-status--output-string (dir &optional session)
+  "Return formatted output tokens for SESSION, or for the project at DIR.
+With SESSION, the count is that instance's own; a live instance whose
+transcript cannot yet be identified reports nothing rather than borrowing
+another instance's total.  Without SESSION -- the resumable rows -- the
+project's newest transcript is the right answer."
   (claude-code-ide-status--format-tokens
-   (when-let* ((file (claude-code-ide-status--transcript-for dir)))
-     (claude-code-ide-status--scan-output-tokens file))))
+   (if session
+       (when-let* ((file (claude-code-ide-status--session-transcript session)))
+         (claude-code-ide-status--scan-output-tokens file))
+     (when-let* ((file (claude-code-ide-status--transcript-for dir)))
+       (claude-code-ide-status--scan-output-tokens file)))))
 
 (defvar claude-code-ide-status--resume-cache nil
   "Cached list of resumable-project rows, most recently active first.

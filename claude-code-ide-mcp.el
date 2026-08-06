@@ -133,7 +133,8 @@ Set to nil when cache needs to be invalidated.")
   last-buffer      ; Last active buffer
   active-diffs     ; Hash table of active diffs
   original-tab     ; Original tab-bar tab where Claude was opened
-  cli-pid)         ; PID of the connected CLI process
+  cli-pid          ; PID of the connected CLI process
+  cli-session-id)  ; UUID the CLI was told to use, and its transcript name
 
 (defun claude-code-ide-mcp--get-buffer-project ()
   "Get the project directory for the current buffer.

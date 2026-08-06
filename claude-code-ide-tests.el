@@ -676,7 +676,8 @@ have completed before cleanup.  Waits up to 5 seconds."
         (cl-letf (((symbol-function 'claude-code-ide--build-claude-command)
                    (lambda (&rest _) "claude")))
           (let ((result (claude-code-ide--create-terminal-session
-                         "*test-vterm*" "/tmp" 12345 nil nil "test-session")))
+                         "*test-vterm*" "/tmp" 12345 nil nil "test-session"
+                         "00000000-0000-4000-a000-000000000000")))
             (should (consp result))
             (should (bufferp (car result)))
             (should (processp (cdr result)))
@@ -688,7 +689,8 @@ have completed before cleanup.  Waits up to 5 seconds."
         (cl-letf (((symbol-function 'claude-code-ide--build-claude-command)
                    (lambda (&rest _) "claude")))
           (let ((result (claude-code-ide--create-terminal-session
-                         "*test-eat*" "/tmp" 12345 nil nil "test-session")))
+                         "*test-eat*" "/tmp" 12345 nil nil "test-session"
+                         "00000000-0000-4000-a000-000000000000")))
             (should (consp result))
             (should (bufferp (car result)))
             (should (processp (cdr result)))
@@ -705,7 +707,8 @@ have completed before cleanup.  Waits up to 5 seconds."
                   ((symbol-function 'executable-find)
                    (lambda (name) (when (equal name "claude") "/opt/bin/claude"))))
           (let ((result (claude-code-ide--create-terminal-session
-                         "*test-ghostel*" "/tmp" 12345 nil nil "test-session")))
+                         "*test-ghostel*" "/tmp" 12345 nil nil "test-session"
+                         "00000000-0000-4000-a000-000000000000")))
             (should (consp result))
             (should (bufferp (car result)))
             (should (processp (cdr result)))
@@ -5080,6 +5083,53 @@ which now names the instance instead."
       (should (equal started "/tmp/elsewhere/sub/"))
       ;; ...and not the project root.
       (should-not (equal started "/tmp/some-project/")))))
+
+(ert-deftest claude-code-ide-test-status-tokens-are-per-instance ()
+  "Each instance reports its own transcript's tokens, never a sibling's.
+The CLI is started with `--session-id' and names its transcript after
+that id.  Keying on the project directory instead would give every
+instance of a project the same total, taken from whichever session wrote
+last -- which is what a live drive showed before this."
+  (claude-code-ide-tests--clear-processes)
+  (clrhash claude-code-ide-status--output-tokens)
+  ;; The directory->transcript map is cached with a TTL; an entry left by an
+  ;; earlier test would resolve to the wrong history directory.
+  (setq claude-code-ide-status--transcript-map-time 0)
+  (let ((projects (make-temp-file "ccide-tokens-proj-" t)))
+    (unwind-protect
+        (let* ((claude-code-ide-status-projects-directory projects)
+               (dir "/tmp/tokens-shared/")
+               (sub (expand-file-name "encoded-project" projects))
+               (id-one "11111111-1111-4111-a111-111111111111")
+               (id-two "22222222-2222-4222-a222-222222222222"))
+          (make-directory sub t)
+          ;; Two transcripts for one project, with different totals.
+          (with-temp-file (expand-file-name (concat id-one ".jsonl") sub)
+            (insert "{\"cwd\":\"/tmp/tokens-shared/\",\"usage\":{\"output_tokens\":100}}\n"))
+          (with-temp-file (expand-file-name (concat id-two ".jsonl") sub)
+            (insert "{\"cwd\":\"/tmp/tokens-shared/\",\"usage\":{\"output_tokens\":7000}}\n"))
+          (let ((one (claude-code-ide-tests--make-session dir))
+                (two (claude-code-ide-tests--make-session dir :instance-name "second")))
+            (setf (claude-code-ide-mcp-session-cli-session-id one) id-one)
+            (setf (claude-code-ide-mcp-session-cli-session-id two) id-two)
+            ;; Each instance reads its own file...
+            (should (equal (substring-no-properties
+                            (claude-code-ide-status--output-string dir one))
+                           "100"))
+            (should (equal (substring-no-properties
+                            (claude-code-ide-status--output-string dir two))
+                           "7.0k"))
+            ;; ...and an instance whose transcript does not exist yet reports
+            ;; nothing, rather than borrowing a sibling's total.
+            (let ((three (claude-code-ide-tests--make-session dir :instance-name "third")))
+              (setf (claude-code-ide-mcp-session-cli-session-id three)
+                    "33333333-3333-4333-a333-333333333333")
+              (should (equal (substring-no-properties
+                              (claude-code-ide-status--output-string dir three))
+                             "—")))))
+      (delete-directory projects t)
+      (claude-code-ide-tests--clear-processes)
+      (clrhash claude-code-ide-status--output-tokens))))
 
 (provide 'claude-code-ide-tests)
 
