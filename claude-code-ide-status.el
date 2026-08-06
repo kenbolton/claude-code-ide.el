@@ -403,6 +403,15 @@ of one repository are running at once."
               (let* ((repo (file-name-directory (directory-file-name container)))
                      (repo-name (and repo (file-name-nondirectory
                                            (directory-file-name repo)))))
+                ;; Claude Code's own `--worktree' puts worktrees in
+                ;; <repo>/.claude/worktrees/, so the directory above the
+                ;; container is Claude's own state directory rather than the
+                ;; repository.  Step over it to name the repository.
+                (when (equal repo-name ".claude")
+                  (setq repo (and repo (file-name-directory
+                                        (directory-file-name repo)))
+                        repo-name (and repo (file-name-nondirectory
+                                             (directory-file-name repo)))))
                 (if (and repo-name (not (string-empty-p repo-name)))
                     (format "%s/%s" repo-name leaf)
                   leaf))

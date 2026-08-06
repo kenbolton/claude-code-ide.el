@@ -3758,6 +3758,12 @@ and only one of them failing is enough to misalign the table."
                     (claude-code-ide-status--project-label
                      "/Users/x/Develop/kycsystems/mtbeacon"))
                    "mtbeacon"))
+    ;; Claude Code's own `--worktree' nests the container inside .claude/,
+    ;; so the repository is two levels above, not one.
+    (should (equal (substring-no-properties
+                    (claude-code-ide-status--project-label
+                     "/Users/x/src/myrepo/.claude/worktrees/feat-x/"))
+                   "myrepo/feat-x"))
     ;; The full path stays reachable, so shortening loses nothing.
     (should (equal (get-text-property
                     0 'help-echo
