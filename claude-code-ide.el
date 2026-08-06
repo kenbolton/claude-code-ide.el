@@ -84,6 +84,7 @@
 (declare-function vterm-send-string "vterm" (string))
 (declare-function vterm-send-escape "vterm" ())
 (declare-function vterm-send-return "vterm" ())
+(declare-function vterm-send-key "vterm" (key &optional shift meta ctrl))
 (declare-function vterm--window-adjust-process-window-size "vterm" (&optional frame))
 
 ;; External function declarations for eat
@@ -225,6 +226,39 @@ controlled by `claude-code-ide-window-side' and related settings.
 When nil, Claude Code opens in a regular buffer that follows standard
 display-buffer behavior."
   :type 'boolean
+  :group 'claude-code-ide)
+
+(defcustom claude-code-ide-keystroke-pacing-delay 0.1
+  "Seconds to pause between consecutive keystrokes sent to the terminal.
+Several commands send more than one keystroke: the select-option commands
+send one or more down arrows before a return, and the prompt commands send
+text before a return.  A terminal or CLI can coalesce keys that arrive too
+close together, which makes a select-option command land on the wrong
+entry.  Raise this if that happens on a slower machine.
+
+The pause is deliberately unconditional.  `sit-for' returns immediately
+when input is pending, which is the normal case when these commands run
+from a transient, so `sleep-for' is used instead."
+  :type 'number
+  :group 'claude-code-ide)
+
+(defcustom claude-code-ide-editor-command "emacsclient"
+  "Command exposed as EDITOR and VISUAL to the Claude Code subprocess.
+When Claude Code invokes an external editor (for example when the
+user presses \\`C-g' in plan mode), it will run this command on a
+temporary file.  The default \"emacsclient\" routes the file into
+the current Emacs instance, so editing happens in Emacs rather than
+in a modal terminal editor inside the Claude buffer.
+
+When using \"emacsclient\", the Emacs server must already be
+running (start it with `M-x server-start' or by adding
+\(server-start) to your init file).  This package does not start
+the server for you.
+
+Set to nil or an empty string to leave the environment untouched
+and inherit whatever EDITOR/VISUAL the user's shell provides."
+  :type '(choice (const :tag "Inherit from shell" nil)
+                 (string :tag "Editor command"))
   :group 'claude-code-ide)
 
 (defcustom claude-code-ide-terminal-backend 'vterm
@@ -577,6 +611,26 @@ unless `evil-ghostel-mode' is active in this buffer."
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
 
+(defun claude-code-ide--terminal-send-down ()
+  "Send down arrow key to the terminal in the current buffer."
+  (cond
+   ((eq claude-code-ide-terminal-backend 'vterm)
+    (vterm-send-key "<down>"))
+   ((eq claude-code-ide-terminal-backend 'eat)
+    (when eat-terminal
+      (eat-term-send-string eat-terminal "\e[B")))
+   ((eq claude-code-ide-terminal-backend 'ghostel)
+    ;; Route the key through ghostel's own API rather than pinning an encoding
+    ;; here.  The encoder follows the terminal's current mode (application
+    ;; cursor keys, Kitty keyboard protocol) instead of one fixed sequence, and
+    ;; it falls back to ESC [ B itself when it declines -- the same bytes the
+    ;; branch below sends, which the CLI does accept.
+    (if (fboundp 'ghostel-send-key)
+        (ghostel-send-key "down")
+      (claude-code-ide--terminal-send-string "\e[B")))
+   (t
+    (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
+
 (defun claude-code-ide--sync-terminal-dimensions (buffer window)
   "Sync terminal dimensions in BUFFER to match WINDOW size.
 This ensures the terminal process has the correct dimensions after
@@ -615,13 +669,11 @@ This function binds:
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
 
-;;; Terminal Reflow Glitch Prevention
+;;; Terminal Resize Handling
 ;;
-;; This section implements a workaround for Claude Code bug #1422
-;; where terminal reflows during height-only changes can cause
-;; uncontrollable scrolling. This code should be removed once
-;; the upstream bug is fixed.
-;; See: https://github.com/anthropics/claude-code/issues/1422
+;; Suppress terminal resizes during scroll/copy mode to keep the
+;; scroll position stable.  Outside of scroll mode the backend's
+;; resize handler runs normally so the process is always notified.
 
 (defun claude-code-ide--terminal-resize-handler ()
   "Retrieve the terminal's resize handling function based on backend."
@@ -649,34 +701,18 @@ its name, so custom naming schemes are recognized as well."
        (buffer-local-value 'claude-code-ide--session buffer)))
 
 (defun claude-code-ide--terminal-reflow-filter (original-fn &rest args)
-  "Filter terminal reflows to prevent height-only resize triggers.
-This wraps ORIGINAL-FN to suppress reflow signals unless the terminal
-width has actually changed, working around the scrolling glitch."
-  (let* ((base-result (apply original-fn args))
-         (dimensions-stable t))
-    ;; Examine each window showing a Claude session
-    (dolist (win (window-list))
-      (when-let* ((buf (window-buffer win))
-                  ((claude-code-ide--session-buffer-p buf)))
-        (let* ((new-width (window-width win))
-               (cached-width (window-parameter win 'claude-code-ide-cached-width)))
-          ;; Width change detected
-          (unless (eql new-width cached-width)
-            (setq dimensions-stable nil)
-            (set-window-parameter win 'claude-code-ide-cached-width new-width)))))
-    ;; Decide whether to allow reflow
-    (cond
-     ;; Not in a Claude buffer - pass through
-     ((not (claude-code-ide--session-buffer-p (current-buffer)))
-      base-result)
-     ;; In scroll mode - suppress reflow
-     ((claude-code-ide--terminal-scroll-mode-active-p)
-      nil)
-     ;; Dimensions changed - allow reflow
-     ((not dimensions-stable)
-      base-result)
-     ;; No width change - suppress reflow
-     (t nil))))
+  "Filter terminal reflows to prevent disruption during scroll mode.
+In scroll mode, suppress both the terminal emulator resize and the
+process notification to keep the scroll position stable.  Otherwise
+let ORIGINAL-FN run normally so the process is always notified of
+dimension changes.
+
+Suppressing on unchanged width, as this once did, withheld height-only
+changes from the process, so the CLI kept rendering to a stale height."
+  (if (and (claude-code-ide--session-buffer-p (current-buffer))
+           (claude-code-ide--terminal-scroll-mode-active-p))
+      nil
+    (apply original-fn args)))
 
 
 ;;; Helper Functions
@@ -1271,6 +1307,26 @@ absolute path sidesteps that lookup."
       program))
 
 
+(defun claude-code-ide--editor-env-vars ()
+  "Return EDITOR/VISUAL env-var strings for the Claude subprocess.
+Returns a list of two \"NAME=VALUE\" entries when
+`claude-code-ide-editor-command' names a command, or nil to leave
+EDITOR/VISUAL inherited from the parent environment."
+  (when (and (stringp claude-code-ide-editor-command)
+             (not (string-empty-p claude-code-ide-editor-command)))
+    (let ((cmd claude-code-ide-editor-command))
+      (list (format "EDITOR=%s" cmd)
+            (format "VISUAL=%s" cmd)))))
+
+(defun claude-code-ide--maybe-recommend-ghostel ()
+  "Suggest the ghostel backend once when running on vterm or eat."
+  (when (and claude-code-ide-show-backend-recommendation
+             (not claude-code-ide--backend-recommendation-shown)
+             (memq claude-code-ide-terminal-backend '(vterm eat)))
+    (setq claude-code-ide--backend-recommendation-shown t)
+    (message "Claude Code IDE: ghostel is the recommended terminal backend (currently using %s) — see the README; set claude-code-ide-show-backend-recommendation to nil to hide this"
+             claude-code-ide-terminal-backend)))
+
 (defun claude-code-ide--create-terminal-session (buffer-name working-dir port continue resume session-id)
   "Create a new terminal session for Claude Code.
 BUFFER-NAME is the name for the terminal buffer.
@@ -1286,9 +1342,11 @@ Signals an error if terminal fails to initialize."
   (claude-code-ide--terminal-ensure-backend)
   (let* ((claude-cmd (claude-code-ide--build-claude-command continue resume session-id))
          (default-directory working-dir)
+         (editor-env (claude-code-ide--editor-env-vars))
          (env-vars (append (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
                                  "TERM_PROGRAM=emacs"
                                  "FORCE_CODE_TERMINAL=true")
+                           editor-env
                            (when claude-code-ide-no-flicker
                              (list "CLAUDE_CODE_NO_FLICKER=1")))))
     ;; Log the command for debugging
@@ -1760,8 +1818,73 @@ targets that instance."
     (if-let ((buffer (and session (claude-code-ide-mcp-session-buffer session))))
         (with-current-buffer buffer
           (claude-code-ide--terminal-send-string "\\")
-          ;; Small delay to ensure prompt text is processed before sending return
-          (sit-for 0.1)
+          ;; See `claude-code-ide-keystroke-pacing-delay' for why the pause is
+          ;; unconditional.
+          (sleep-for claude-code-ide-keystroke-pacing-delay)
+          (claude-code-ide--terminal-send-return))
+      (user-error "No Claude Code session for this project"))))
+
+;;;###autoload
+(defun claude-code-ide-select-option-1 ()
+  "Select the first option in Claude Code.
+This sends return to confirm the currently highlighted option.
+Inside a Claude terminal buffer it always targets that instance."
+  (interactive)
+  (let ((session (claude-code-ide--resolve-session
+                  'auto "Select option 1 in Claude instance: ")))
+    (if-let* ((buffer (and session (claude-code-ide-mcp-session-buffer session))))
+        (with-current-buffer buffer
+          (claude-code-ide--terminal-send-return))
+      (user-error "No Claude Code session for this project"))))
+
+;;;###autoload
+(defun claude-code-ide-select-option-2 ()
+  "Select the second option in Claude Code.
+This sends 1 down arrow followed by return.
+Inside a Claude terminal buffer it always targets that instance."
+  (interactive)
+  (let ((session (claude-code-ide--resolve-session
+                  'auto "Select option 2 in Claude instance: ")))
+    (if-let* ((buffer (and session (claude-code-ide-mcp-session-buffer session))))
+        (with-current-buffer buffer
+          (claude-code-ide--terminal-send-down)
+          (sleep-for claude-code-ide-keystroke-pacing-delay)
+          (claude-code-ide--terminal-send-return))
+      (user-error "No Claude Code session for this project"))))
+
+;;;###autoload
+(defun claude-code-ide-select-option-3 ()
+  "Select the third option in Claude Code.
+This sends 2 down arrows followed by return.
+Inside a Claude terminal buffer it always targets that instance."
+  (interactive)
+  (let ((session (claude-code-ide--resolve-session
+                  'auto "Select option 3 in Claude instance: ")))
+    (if-let* ((buffer (and session (claude-code-ide-mcp-session-buffer session))))
+        (with-current-buffer buffer
+          (claude-code-ide--terminal-send-down)
+          (sleep-for claude-code-ide-keystroke-pacing-delay)
+          (claude-code-ide--terminal-send-down)
+          (sleep-for claude-code-ide-keystroke-pacing-delay)
+          (claude-code-ide--terminal-send-return))
+      (user-error "No Claude Code session for this project"))))
+
+;;;###autoload
+(defun claude-code-ide-select-option-4 ()
+  "Select the fourth option in Claude Code.
+This sends 3 down arrows followed by return.
+Inside a Claude terminal buffer it always targets that instance."
+  (interactive)
+  (let ((session (claude-code-ide--resolve-session
+                  'auto "Select option 4 in Claude instance: ")))
+    (if-let* ((buffer (and session (claude-code-ide-mcp-session-buffer session))))
+        (with-current-buffer buffer
+          (claude-code-ide--terminal-send-down)
+          (sleep-for claude-code-ide-keystroke-pacing-delay)
+          (claude-code-ide--terminal-send-down)
+          (sleep-for claude-code-ide-keystroke-pacing-delay)
+          (claude-code-ide--terminal-send-down)
+          (sleep-for claude-code-ide-keystroke-pacing-delay)
           (claude-code-ide--terminal-send-return))
       (user-error "No Claude Code session for this project"))))
 

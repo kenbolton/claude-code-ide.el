@@ -4831,6 +4831,212 @@ locked and a buffer that was writable before ediff stays writable."
                  (when (file-exists-p test-file) (delete-file test-file)))))
          (remhash default-directory claude-code-ide-mcp--sessions))))))
 
+(ert-deftest claude-code-ide-test-select-option-key-sequence ()
+  "Test that select-option-3 sends down, down, return in that order.
+The inter-key pause must be unconditional: `sit-for' returns early when
+input is pending, which is the normal case when these commands run from a
+transient, and the keys then arrive too close together for the CLI to
+register both arrows."
+  (let ((sent '()))
+    (cl-letf (((symbol-function 'claude-code-ide--resolve-session)
+               (lambda (&rest _)
+                 (claude-code-ide-tests--make-session
+                  "/tmp/opts/" :buffer (get-buffer-create "*claude-code-test-options*"))))
+              ((symbol-function 'claude-code-ide--terminal-send-down)
+               (lambda () (push 'down sent)))
+              ((symbol-function 'claude-code-ide--terminal-send-return)
+               (lambda () (push 'return sent))))
+      (let ((buffer (get-buffer-create "*claude-code-test-options*")))
+        (unwind-protect
+            (progn
+              (claude-code-ide-select-option-3)
+              (should (equal (nreverse sent) '(down down return)))
+              ;; Prove the delay is read from the defcustom rather than
+              ;; hardcoded: two pauses at 0.2s must cost at least 0.4s.
+              (setq sent '())
+              (let ((claude-code-ide-keystroke-pacing-delay 0.2)
+                    (start (float-time)))
+                (claude-code-ide-select-option-3)
+                (should (>= (- (float-time) start) 0.4))
+                (should (equal (nreverse sent) '(down down return))))
+              (setq sent '())
+              (claude-code-ide-select-option-1)
+              (should (equal (nreverse sent) '(return)))
+              (setq sent '())
+              (claude-code-ide-select-option-2)
+              (should (equal (nreverse sent) '(down return)))
+              (setq sent '())
+              (claude-code-ide-select-option-4)
+              (should (equal (nreverse sent) '(down down down return))))
+          (kill-buffer buffer))))))
+
+(ert-deftest claude-code-ide-test-send-down-ghostel-fallback ()
+  "Test that send-down falls back to a raw sequence without `ghostel-send-key'.
+Older ghostel releases lack the key encoder.  The fallback is the same
+ESC [ B that the eat backend sends."
+  (let ((ghostel-string-sent nil)
+        (claude-code-ide-terminal-backend 'ghostel))
+    (cl-letf (((symbol-function 'ghostel-send-key) nil)
+              ((symbol-function 'ghostel-send-string)
+               (lambda (str) (setq ghostel-string-sent str))))
+      (should-not (fboundp 'ghostel-send-key))
+      (claude-code-ide--terminal-send-down)
+      (should (equal ghostel-string-sent "\e[B")))))
+
+(ert-deftest claude-code-ide-test-insert-newline-sequence ()
+  "Test that insert-newline sends a backslash and then a return.
+Claude Code reads that pair as a literal newline in the prompt."
+  (let ((sent '()))
+    (cl-letf (((symbol-function 'claude-code-ide--resolve-session)
+               (lambda (&rest _)
+                 (claude-code-ide-tests--make-session
+                  "/tmp/nl/" :buffer (get-buffer-create "*claude-code-test-newline*"))))
+              ((symbol-function 'claude-code-ide--terminal-send-string)
+               (lambda (str) (push (list 'string str) sent)))
+              ((symbol-function 'claude-code-ide--terminal-send-return)
+               (lambda () (push 'return sent))))
+      (let ((buffer (get-buffer-create "*claude-code-test-newline*")))
+        (unwind-protect
+            (progn
+              (claude-code-ide-insert-newline)
+              (should (equal (nreverse sent) '((string "\\") return))))
+          (kill-buffer buffer))))))
+
+(ert-deftest claude-code-ide-test-editor-env-vars ()
+  "Test EDITOR/VISUAL env-var construction from the editor defcustom."
+  ;; Default "emacsclient" produces both EDITOR and VISUAL.
+  (let ((claude-code-ide-editor-command "emacsclient"))
+    (let ((env (claude-code-ide--editor-env-vars)))
+      (should (member "EDITOR=emacsclient" env))
+      (should (member "VISUAL=emacsclient" env))))
+
+  ;; A custom command with arguments is preserved verbatim.
+  (let ((claude-code-ide-editor-command "emacsclient -s mysrv"))
+    (let ((env (claude-code-ide--editor-env-vars)))
+      (should (member "EDITOR=emacsclient -s mysrv" env))
+      (should (member "VISUAL=emacsclient -s mysrv" env))))
+
+  ;; An arbitrary non-emacsclient command is passed through as-is.
+  (let ((claude-code-ide-editor-command "vi"))
+    (let ((env (claude-code-ide--editor-env-vars)))
+      (should (member "EDITOR=vi" env))
+      (should (member "VISUAL=vi" env))))
+
+  ;; nil or empty string disables the override entirely.
+  (let ((claude-code-ide-editor-command nil))
+    (should (null (claude-code-ide--editor-env-vars))))
+  (let ((claude-code-ide-editor-command ""))
+    (should (null (claude-code-ide--editor-env-vars)))))
+
+(ert-deftest claude-code-ide-test-reflow-filter-passthrough ()
+  "Test that the reflow filter passes through resizes outside scroll mode."
+  (let ((orig-called nil)
+        (orig-result '(80 . 24)))
+    (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
+               (lambda (_) t))
+              ((symbol-function 'claude-code-ide--terminal-scroll-mode-active-p)
+               (lambda () nil)))
+      (let ((result (claude-code-ide--terminal-reflow-filter
+                     (lambda (&rest _) (setq orig-called t) orig-result))))
+        (should orig-called)
+        (should (equal result orig-result))))))
+
+(ert-deftest claude-code-ide-test-reflow-filter-scroll-mode ()
+  "Test that the reflow filter suppresses resizes during scroll mode."
+  (let ((orig-called nil))
+    (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
+               (lambda (_) t))
+              ((symbol-function 'claude-code-ide--terminal-scroll-mode-active-p)
+               (lambda () t)))
+      (let ((result (claude-code-ide--terminal-reflow-filter
+                     (lambda (&rest _) (setq orig-called t) '(80 . 24)))))
+        ;; Original function should NOT be called in scroll mode
+        (should-not orig-called)
+        (should-not result)))))
+
+(ert-deftest claude-code-ide-test-reflow-filter-non-session ()
+  "Test that the reflow filter passes through for non-session buffers."
+  (let ((orig-called nil)
+        (orig-result '(80 . 24)))
+    (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
+               (lambda (_) nil))
+              ((symbol-function 'claude-code-ide--terminal-scroll-mode-active-p)
+               (lambda () nil)))
+      (let ((result (claude-code-ide--terminal-reflow-filter
+                     (lambda (&rest _) (setq orig-called t) orig-result))))
+        (should orig-called)
+        (should (equal result orig-result))))))
+
+(ert-deftest claude-code-ide-test-select-option-no-session ()
+  "Test select-option commands when no session exists."
+  (claude-code-ide-tests--clear-processes)
+  (unwind-protect
+      (progn
+        (should-error (claude-code-ide-select-option-1) :type 'user-error)
+        (should-error (claude-code-ide-select-option-2) :type 'user-error)
+        (should-error (claude-code-ide-select-option-3) :type 'user-error)
+        (should-error (claude-code-ide-select-option-4) :type 'user-error))
+    (claude-code-ide-tests--clear-processes)))
+
+(defun claude-code-ide-tests--transient-groups (layout)
+  "Return LAYOUT's groups as a list of (ARGS-PLIST . CHILDREN) pairs.
+Transient changed how it stores a parsed layout, so reading it by fixed
+index breaks across versions.  Before transient 0.9 a layout was a bare
+list of [LEVEL CLASS ARGS CHILDREN] groups; since then it is a
+[LEVEL _ GROUPS] vector holding [CLASS ARGS CHILDREN] groups.  Normalize
+both, so the caller can assert the invariant rather than the encoding."
+  (let ((groups (if (and (vectorp layout)
+                         (integerp (aref layout 0)))
+                    (aref layout 2)
+                  layout)))
+    (mapcar (lambda (group)
+              (pcase (length group)
+                (4 (cons (aref group 2) (aref group 3)))
+                (3 (cons (aref group 1) (aref group 2)))
+                (_ (cons nil nil))))
+            groups)))
+
+(ert-deftest claude-code-ide-test-transient-groups-normalizer ()
+  "The layout normalizer reads both transient encodings.
+Pins the helper the header test depends on, so a transient upgrade that
+changes the encoding fails here with a clear cause rather than as a
+puzzling assertion in the test below."
+  ;; Pre-0.9: bare list of [LEVEL CLASS ARGS CHILDREN] groups.
+  (should (equal (claude-code-ide-tests--transient-groups
+                  (list (vector 1 'transient-column '(:description foo) '(a b))))
+                 '(((:description foo) . (a b)))))
+  ;; 0.9 and later: [LEVEL _ GROUPS] holding [CLASS ARGS CHILDREN] groups.
+  (should (equal (claude-code-ide-tests--transient-groups
+                  (vector 2 nil (list (vector 'transient-column '(:description foo) '(a b)))))
+                 '(((:description foo) . (a b))))))
+
+(ert-deftest claude-code-ide-test-transient-descriptions-have-children ()
+  "Every menu group that carries a description also owns children.
+`transient--init-group' binds a group's children inside `and-let*', so a
+childless group is dropped whole and its description never reaches the
+buffer.  The session-status header was invisible for exactly this reason.
+The header is checked by name because it is the one that regressed."
+  (require 'claude-code-ide-transient)
+  (dolist (prefix '(claude-code-ide-menu
+                    claude-code-ide-newline-menu
+                    claude-code-ide-config-menu
+                    claude-code-ide-debug-menu))
+    (let ((groups (claude-code-ide-tests--transient-groups
+                   (get prefix 'transient--layout))))
+      (should groups)
+      (pcase-dolist (`(,args . ,children) groups)
+        (when (plist-get args :description)
+          (should children)))))
+  ;; The status header specifically must still be attached, and attached to
+  ;; a group that survives initialization.
+  (let ((header (seq-find (lambda (group)
+                            (eq (plist-get (car group) :description)
+                                'claude-code-ide--session-status))
+                          (claude-code-ide-tests--transient-groups
+                           (get 'claude-code-ide-menu 'transient--layout)))))
+    (should header)
+    (should (cdr header))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
