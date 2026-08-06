@@ -80,6 +80,10 @@ Returns: 1 (Error), 2 (Warning), 3 (Information), 4 (Hint)."
     (':warning 2)
     ('flymake-note 3)
     (':note 3)
+    ;; Eglot severities (eglot wraps flymake types with an eglot- prefix)
+    ('eglot-error 1)
+    ('eglot-warning 2)
+    ('eglot-note 3)
     ;; Default
     (_ 3)))
 
@@ -98,34 +102,50 @@ Returns: 1 (Error), 2 (Warning), 3 (Information), 4 (Hint)."
     (':warning "Warning")
     ('flymake-note "Information")
     (':note "Information")
+    ;; Eglot severities (eglot wraps flymake types with eglot- prefix)
+    ('eglot-error "Error")
+    ('eglot-warning "Warning")
+    ('eglot-note "Information")
     ;; Default
     (_ "Information")))
 
+(defun claude-code-ide-diagnostics--source-name (source fallback)
+  "Return SOURCE as a string, or FALLBACK when SOURCE is not usable.
+SOURCE is a flycheck checker or a flymake backend.  A flymake backend can
+be a closure rather than a symbol, so `symbol-name' is not safe here."
+  (cond ((stringp source) source)
+        ((and source (symbolp source)) (symbol-name source))
+        (t fallback)))
+
 (defun claude-code-ide-diagnostics--get-flycheck-diagnostics (buffer)
-  "Get Flycheck diagnostics for BUFFER in VS Code format."
+  "Get Flycheck diagnostics for BUFFER in VS Code format.
+Positions are zero-based for both line and character, matching the VS
+Code / LSP diagnostic range.  Flycheck reports one-based lines and
+columns, so both are decremented here."
   (when (featurep 'flycheck)
     (with-current-buffer buffer
       (when (bound-and-true-p flycheck-mode)
         (mapcar (lambda (err)
-                  `((range . ((start . ((line . ,(flycheck-error-line err))
-                                        (character . ,(if (flycheck-error-column err)
-                                                          (flycheck-error-column err)
-                                                        1))))
-                              (end . ((line . ,(or (flycheck-error-end-line err)
-                                                   (flycheck-error-line err)))
-                                      (character . ,(if (or (flycheck-error-end-column err)
-                                                            (flycheck-error-column err))
-                                                        (or (flycheck-error-end-column err)
-                                                            (flycheck-error-column err))
-                                                      1))))))
-                    (severity . ,(claude-code-ide-diagnostics--severity-to-string
-                                  (flycheck-error-level err)))
-                    (source . ,(or (flycheck-error-checker err) "flycheck"))
-                    (message . ,(flycheck-error-message err))))
+                  (let ((start-col (flycheck-error-column err))
+                        (end-col (or (flycheck-error-end-column err)
+                                     (flycheck-error-column err))))
+                    `((range . ((start . ((line . ,(1- (flycheck-error-line err)))
+                                          (character . ,(if start-col (1- start-col) 0))))
+                                (end . ((line . ,(1- (or (flycheck-error-end-line err)
+                                                         (flycheck-error-line err))))
+                                        (character . ,(if end-col (1- end-col) 0))))))
+                      (severity . ,(claude-code-ide-diagnostics--severity-to-string
+                                    (flycheck-error-level err)))
+                      (source . ,(claude-code-ide-diagnostics--source-name
+                                  (flycheck-error-checker err) "flycheck"))
+                      (message . ,(flycheck-error-message err)))))
                 flycheck-current-errors)))))
 
 (defun claude-code-ide-diagnostics--get-flymake-diagnostics (buffer)
-  "Get Flymake diagnostics for BUFFER in VS Code format."
+  "Get Flymake diagnostics for BUFFER in VS Code format.
+Positions are zero-based for both line and character, matching the VS
+Code / LSP diagnostic range.  `line-number-at-pos' is one-based, so the
+line is decremented; `current-column' is already zero-based."
   (when (featurep 'flymake)
     (with-current-buffer buffer
       (when (bound-and-true-p flymake-mode)
@@ -133,20 +153,20 @@ Returns: 1 (Error), 2 (Warning), 3 (Information), 4 (Hint)."
                   (save-excursion
                     (let* ((beg (flymake-diagnostic-beg diag))
                            (end (flymake-diagnostic-end diag))
-                           (beg-line (progn (goto-char beg)
-                                            (line-number-at-pos)))
-                           (beg-col (current-column))
-                           (end-line (progn (goto-char end)
-                                            (line-number-at-pos)))
-                           (end-col (current-column)))
+                           (beg-line (1- (line-number-at-pos beg t)))
+                           (beg-col (progn (goto-char beg)
+                                           (current-column)))
+                           (end-line (1- (line-number-at-pos end t)))
+                           (end-col (progn (goto-char end)
+                                           (current-column))))
                       `((range . ((start . ((line . ,beg-line)
                                             (character . ,beg-col)))
                                   (end . ((line . ,end-line)
                                           (character . ,end-col)))))
                         (severity . ,(claude-code-ide-diagnostics--severity-to-string
                                       (flymake-diagnostic-type diag)))
-                        (source . ,(symbol-name (or (flymake-diagnostic-backend diag)
-                                                    'flymake)))
+                        (source . ,(claude-code-ide-diagnostics--source-name
+                                    (flymake-diagnostic-backend diag) "flymake"))
                         (message . ,(flymake-diagnostic-text diag))))))
                 (flymake-diagnostics))))))
 
@@ -209,7 +229,7 @@ Optional SESSION contains the MCP session context."
       (let ((buffer-count 0)
             (checked-count 0))
         (dolist (buffer (buffer-list))
-          (when-let ((file (buffer-file-name buffer)))
+          (when-let* ((file (buffer-file-name buffer)))
             (setq buffer-count (1+ buffer-count))
             ;; Filter by project directory if session is available
             (when (or (not project-dir)
