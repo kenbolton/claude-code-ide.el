@@ -5131,6 +5131,42 @@ last -- which is what a live drive showed before this."
       (claude-code-ide-tests--clear-processes)
       (clrhash claude-code-ide-status--output-tokens))))
 
+(ert-deftest claude-code-ide-test-status-searches-all-history-dirs ()
+  "An instance is found whichever history directory holds its transcript.
+Claude keeps more than one directory for a single path when a worktree is
+removed and recreated, or when its encoding produces the name twice.
+Searching only the newest directory loses every transcript in the others,
+so an instance writing to the older one reports nothing."
+  (claude-code-ide-tests--clear-processes)
+  (clrhash claude-code-ide-status--output-tokens)
+  (setq claude-code-ide-status--transcript-map-time 0)
+  (let ((projects (make-temp-file "ccide-multidir-" t)))
+    (unwind-protect
+        (let* ((claude-code-ide-status-projects-directory projects)
+               (dir "/tmp/multidir-project/")
+               (older (expand-file-name "encoded-older" projects))
+               (newer (expand-file-name "encoded-newer" projects))
+               (id "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa"))
+          (make-directory older t)
+          (make-directory newer t)
+          ;; Both directories claim the same project.
+          (with-temp-file (expand-file-name (concat id ".jsonl") older)
+            (insert "{\"cwd\":\"/tmp/multidir-project/\",\"usage\":{\"output_tokens\":4200}}\n"))
+          (with-temp-file (expand-file-name "unrelated.jsonl" newer)
+            (insert "{\"cwd\":\"/tmp/multidir-project/\",\"usage\":{\"output_tokens\":999999}}\n"))
+          ;; Make the decoy strictly newer, so a newest-only lookup prefers it.
+          (set-file-times (expand-file-name "unrelated.jsonl" newer) (current-time))
+          (let ((session (claude-code-ide-tests--make-session dir)))
+            (setf (claude-code-ide-mcp-session-cli-session-id session) id)
+            ;; The instance's own transcript is found in the older directory,
+            ;; not the newest one.
+            (should (equal (substring-no-properties
+                            (claude-code-ide-status--output-string dir session))
+                           "4.2k"))))
+      (delete-directory projects t)
+      (claude-code-ide-tests--clear-processes)
+      (clrhash claude-code-ide-status--output-tokens))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
