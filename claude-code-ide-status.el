@@ -58,6 +58,8 @@
 (declare-function claude-code-ide-mcp-session-connected-p "claude-code-ide-mcp" (directory))
 (declare-function claude-code-ide-mcp-session-pending-permissions "claude-code-ide-mcp" (directory))
 (declare-function claude-code-ide-mcp-session-cli-pid-for "claude-code-ide-mcp" (directory))
+(declare-function claude-code-ide-mcp--get-session-for-project "claude-code-ide-mcp" (project-dir))
+(declare-function claude-code-ide-mcp-session-cli-session-id "claude-code-ide-mcp" (session))
 
 (defvar claude-code-ide-status-buffer-name "*Claude Sessions*"
   "Name of the buffer showing the Claude session status list.")
@@ -594,7 +596,10 @@ from the directory name, whose slash-to-dash encoding is lossy."
         (file-name-as-directory (match-string 1))))))
 
 (defvar claude-code-ide-status--transcript-map (make-hash-table :test 'equal)
-  "Maps a project directory to the newest transcript recording work there.")
+  "Maps a project directory to every history directory recording work there.
+Claude may hold more than one for a single path -- a worktree removed and
+recreated, or a path its encoding produced twice -- so this keeps them all.
+Looking in only one loses transcripts that live in the others.")
 
 (defvar claude-code-ide-status--transcript-map-time 0
   "When `claude-code-ide-status--transcript-map' was last rebuilt.")
@@ -611,18 +616,70 @@ tree as the resumable-project scan and is cached on the same cadence."
       (dolist (sub (directory-files claude-code-ide-status-projects-directory t
                                     directory-files-no-dot-files-regexp))
         (when (file-directory-p sub)
-          (when-let* ((cwd (claude-code-ide-status--project-cwd sub))
-                      (file (claude-code-ide-status--newest-transcript sub)))
-            (puthash (claude-code-ide-status--normalize-dir cwd) file
-                     claude-code-ide-status--transcript-map))))
+          (when-let* ((cwd (claude-code-ide-status--project-cwd sub)))
+            (let ((key (claude-code-ide-status--normalize-dir cwd)))
+              (puthash key
+                       (cons sub (gethash key claude-code-ide-status--transcript-map))
+                       claude-code-ide-status--transcript-map)))))
       (setq claude-code-ide-status--transcript-map-time (float-time)))
-    (gethash (claude-code-ide-status--normalize-dir dir)
-             claude-code-ide-status--transcript-map)))
+    (let ((subs (gethash (claude-code-ide-status--normalize-dir dir)
+                         claude-code-ide-status--transcript-map)))
+      ;; The newest transcript across every history directory for DIR.
+      (car (sort (delq nil (mapcar #'claude-code-ide-status--newest-transcript subs))
+                 (lambda (a b)
+                   (time-less-p (nth 5 (file-attributes b))
+                                (nth 5 (file-attributes a)))))))))
+
+(defun claude-code-ide-status--history-dirs (dir)
+  "Return every Claude history directory recording work in DIR."
+  ;; Rebuilding is the same scan `--transcript-for' performs, so go through
+  ;; it to reuse the cache rather than walking the tree again.
+  (claude-code-ide-status--transcript-for dir)
+  (gethash (claude-code-ide-status--normalize-dir dir)
+           claude-code-ide-status--transcript-map))
+
+(defun claude-code-ide-status--session-transcript (session)
+  "Return SESSION's own transcript, or nil when it cannot be identified.
+The CLI is started with `--session-id', and it names the transcript after
+that id, so an instance can be matched to its own file.  Falling back to
+the project's newest transcript would be wrong here: a project may run
+several instances, and they would all report the same total, taken from
+whichever session wrote last.
+
+Two cases legitimately return nil, and both show as a dash rather than a
+borrowed number:
+
+- A resumed instance.  Resuming reuses the original session's id, so the
+  CLI writes to that file while this one holds a fresh id that will never
+  exist.  Attributing it exactly would mean forking the conversation,
+  which copies the whole transcript on every resume -- 8.8MB for one
+  measured here -- and reports the forked history rather than the new
+  work.  A blank cell that is never wrong is worth more.
+
+- An instance that has produced nothing yet, or one running with
+  transcript saving disabled.  Nothing has been written to read."
+  (when-let* ((id (claude-code-ide-mcp-session-cli-session-id session))
+              (dir (claude-code-ide-mcp-session-project-dir session)))
+    (seq-find #'file-readable-p
+              (mapcar (lambda (sub) (expand-file-name (concat id ".jsonl") sub))
+                      (claude-code-ide-status--history-dirs dir)))))
 
 (defun claude-code-ide-status--output-string (dir)
-  "Return the output tokens produced by the session in DIR, formatted."
+  "Return the output tokens produced by the session in DIR, formatted.
+
+Read from the session's own transcript, which the CLI names after the id
+it was started with.  Taking the project's newest transcript instead
+reports whichever session wrote last, so a fresh session in a directory
+with older history shows that history's total rather than its own.
+
+A dash means there is nothing to attribute yet: the session has produced
+no output, or it was resumed -- resuming reuses the original session's
+id, so the CLI writes to that file rather than to this one -- or the CLI
+predates --session-id, or transcript saving is turned off."
   (claude-code-ide-status--format-tokens
-   (when-let* ((file (claude-code-ide-status--transcript-for dir)))
+   (when-let* ((session (claude-code-ide-mcp--get-session-for-project
+                         (claude-code-ide-status--normalize-dir dir)))
+               (file (claude-code-ide-status--session-transcript session)))
      (claude-code-ide-status--scan-output-tokens file))))
 
 (defvar claude-code-ide-status--resume-cache nil

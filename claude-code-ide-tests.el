@@ -713,7 +713,8 @@ Claude Code reads that pair as a literal newline in the prompt."
         (cl-letf (((symbol-function 'claude-code-ide--build-claude-command)
                    (lambda (&rest _) "claude")))
           (let ((result (claude-code-ide--create-terminal-session
-                         "*test-vterm*" "/tmp" 12345 nil nil "test-session")))
+                         "*test-vterm*" "/tmp" 12345 nil nil "test-session"
+                         "00000000-0000-4000-a000-000000000000")))
             (should (consp result))
             (should (bufferp (car result)))
             (should (processp (cdr result)))
@@ -725,7 +726,8 @@ Claude Code reads that pair as a literal newline in the prompt."
         (cl-letf (((symbol-function 'claude-code-ide--build-claude-command)
                    (lambda (&rest _) "claude")))
           (let ((result (claude-code-ide--create-terminal-session
-                         "*test-eat*" "/tmp" 12345 nil nil "test-session")))
+                         "*test-eat*" "/tmp" 12345 nil nil "test-session"
+                         "00000000-0000-4000-a000-000000000000")))
             (should (consp result))
             (should (bufferp (car result)))
             (should (processp (cdr result)))
@@ -742,7 +744,8 @@ Claude Code reads that pair as a literal newline in the prompt."
                   ((symbol-function 'executable-find)
                    (lambda (name) (when (equal name "claude") "/opt/bin/claude"))))
           (let ((result (claude-code-ide--create-terminal-session
-                         "*test-ghostel*" "/tmp" 12345 nil nil "test-session")))
+                         "*test-ghostel*" "/tmp" 12345 nil nil "test-session"
+                         "00000000-0000-4000-a000-000000000000")))
             (should (consp result))
             (should (bufferp (car result)))
             (should (processp (cdr result)))
@@ -3942,6 +3945,81 @@ The header is checked by name because it is the one that regressed."
                            (get 'claude-code-ide-menu 'transient--layout)))))
     (should header)
     (should (cdr header))))
+
+(ert-deftest claude-code-ide-test-session-id-flag-is-guarded ()
+  "The --session-id flag is passed only when it is safe to pass.
+An older CLI that does not know the option refuses to start at all, so a
+display feature must not risk the session.  Resume and continue carry the
+original session's id and must not be handed a new one."
+  (let ((claude-code-ide-system-prompt nil))
+    ;; Supported, fresh session: the flag is passed.
+    (let ((claude-code-ide--cli-supports-session-id t))
+      (should (string-match-p "--session-id abc"
+                              (claude-code-ide--build-claude-command nil nil "mcp" "abc"))))
+    ;; Not supported: omitted rather than risking startup.
+    (let ((claude-code-ide--cli-supports-session-id nil))
+      (should-not (string-match-p "--session-id"
+                                  (claude-code-ide--build-claude-command nil nil "mcp" "abc"))))
+    ;; Never probed: still omitted, since unknown is not permission.
+    (let ((claude-code-ide--cli-supports-session-id 'unknown))
+      (should-not (string-match-p "--session-id"
+                                  (claude-code-ide--build-claude-command nil nil "mcp" "abc"))))
+    ;; Resume and continue reuse the original id.
+    (let ((claude-code-ide--cli-supports-session-id t))
+      (should-not (string-match-p "--session-id"
+                                  (claude-code-ide--build-claude-command nil t "mcp" "abc")))
+      (should-not (string-match-p "--session-id"
+                                  (claude-code-ide--build-claude-command t nil "mcp" "abc"))))))
+
+(ert-deftest claude-code-ide-test-cli-session-id-is-a-uuid ()
+  "The generated id is a v4 UUID, which is what the CLI requires."
+  (let ((id (claude-code-ide--generate-cli-session-id)))
+    (should (string-match-p
+             "\\`[0-9a-f]\\{8\\}-[0-9a-f]\\{4\\}-4[0-9a-f]\\{3\\}-a[0-9a-f]\\{3\\}-[0-9a-f]\\{12\\}\\'"
+             id))
+    (should-not (equal id (claude-code-ide--generate-cli-session-id)))))
+
+(ert-deftest claude-code-ide-test-status-tokens-come-from-own-transcript ()
+  "Tokens are read from the session's own transcript, not the newest one.
+A directory carrying older history would otherwise report that history's
+total for a session that has produced nothing of the sort."
+  (claude-code-ide-tests--clear-processes)
+  (clrhash claude-code-ide-status--output-tokens)
+  (setq claude-code-ide-status--transcript-map-time 0)
+  (let ((projects (make-temp-file "ccide-mainport-" t)))
+    (unwind-protect
+        (let* ((claude-code-ide-status-projects-directory projects)
+               (dir "/tmp/mainport-project/")
+               (sub (expand-file-name "encoded" projects))
+               (mine "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa")
+               (stale "bbbbbbbb-bbbb-4bbb-abbb-bbbbbbbbbbbb"))
+          (make-directory sub t)
+          (with-temp-file (expand-file-name (concat mine ".jsonl") sub)
+            (insert "{\"cwd\":\"/tmp/mainport-project/\",\"usage\":{\"output_tokens\":300}}\n"))
+          ;; Older history in the same directory, with a much larger total,
+          ;; made newer on disk so a newest-wins lookup would prefer it.
+          (with-temp-file (expand-file-name (concat stale ".jsonl") sub)
+            (insert "{\"cwd\":\"/tmp/mainport-project/\",\"usage\":{\"output_tokens\":1200000}}\n"))
+          (set-file-times (expand-file-name (concat stale ".jsonl") sub) (current-time))
+          (let ((session (make-claude-code-ide-mcp-session
+                          :project-dir dir
+                          :deferred (make-hash-table :test 'equal)
+                          :active-diffs (make-hash-table :test 'equal))))
+            (setf (claude-code-ide-mcp-session-cli-session-id session) mine)
+            (puthash (claude-code-ide-status--normalize-dir dir)
+                     session claude-code-ide-mcp--sessions)
+            (should (equal (substring-no-properties
+                            (claude-code-ide-status--output-string dir))
+                           "300"))
+            ;; With no id recorded -- a resumed session, or an older CLI --
+            ;; nothing is reported rather than the stale total.
+            (setf (claude-code-ide-mcp-session-cli-session-id session) nil)
+            (should (equal (substring-no-properties
+                            (claude-code-ide-status--output-string dir))
+                           "—"))))
+      (delete-directory projects t)
+      (claude-code-ide-tests--clear-processes)
+      (clrhash claude-code-ide-status--output-tokens))))
 
 (provide 'claude-code-ide-tests)
 
