@@ -697,7 +697,20 @@ The CLI is started with `--session-id', and it names the transcript after
 that id, so an instance can be matched to its own file.  Falling back to
 the project's newest transcript would be wrong here: a project may run
 several instances, and they would all report the same total, taken from
-whichever session wrote last."
+whichever session wrote last.
+
+Two cases legitimately return nil, and both show as a dash rather than a
+borrowed number:
+
+- A resumed instance.  Resuming reuses the original session's id, so the
+  CLI writes to that file while this one holds a fresh id that will never
+  exist.  Attributing it exactly would mean forking the conversation,
+  which copies the whole transcript on every resume -- 8.8MB for one
+  measured here -- and reports the forked history rather than the new
+  work.  A blank cell that is never wrong is worth more.
+
+- An instance that has produced nothing yet, or one running with
+  transcript saving disabled.  Nothing has been written to read."
   (when-let* ((id (claude-code-ide-mcp-session-cli-session-id session))
               (dir (claude-code-ide-mcp-session-project-dir session)))
     (seq-find #'file-readable-p
