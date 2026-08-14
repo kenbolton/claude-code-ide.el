@@ -1795,15 +1795,15 @@ With prefix argument ALL-PROJECTS, stop the instances of all projects."
       ;; `use-short-answers' must not weaken it.
       (when (let ((use-short-answers nil))
               (yes-or-no-p (if all-projects
-                          (format "Stop all %d Claude Code instance%s? "
-                                  (length sessions)
-                                  (if (cdr sessions) "s" ""))
-                        (format "Stop %d Claude Code instance%s in %s? "
-                                (length sessions)
-                                (if (cdr sessions) "s" "")
-                                (file-name-nondirectory
-                                 (directory-file-name
-                                  (claude-code-ide--get-working-directory)))))))
+                               (format "Stop all %d Claude Code instance%s? "
+                                       (length sessions)
+                                       (if (cdr sessions) "s" ""))
+                             (format "Stop %d Claude Code instance%s in %s? "
+                                     (length sessions)
+                                     (if (cdr sessions) "s" "")
+                                     (file-name-nondirectory
+                                      (directory-file-name
+                                       (claude-code-ide--get-working-directory)))))))
         ;; One instance's teardown error must not strand the rest
         (dolist (session sessions)
           (condition-case err
