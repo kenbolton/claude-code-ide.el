@@ -5200,6 +5200,40 @@ appending to that session's transcript, so the overview can read it."
           (should-not (claude-code-ide-status--session-id-for "/tmp/no-such-project/")))
       (delete-directory projects t))))
 
+(ert-deftest claude-code-ide-test-cli-session-id-only-when-known ()
+  "An instance records a CLI session id only when it really has one.
+The flag is withheld for continue and for an unnamed resume, because both
+let the CLI choose which conversation to reopen.  Minting an id anyway
+would record one that names a transcript the CLI never writes -- the
+overview would look up a file that cannot exist, and any later code
+trusting the field would be wrong.  Found running a continued session:
+the id was set, and the CLI was writing elsewhere."
+  (let (captured)
+    (cl-letf (((symbol-function 'claude-code-ide--ensure-cli) (lambda () t))
+              ((symbol-function 'claude-code-ide--cleanup-dead-sessions) (lambda () nil))
+              ((symbol-function 'claude-code-ide--read-instance-name) (lambda (&rest _) nil))
+              ((symbol-function 'claude-code-ide--generate-session-id) (lambda (_) "mcp-id"))
+              ((symbol-function 'claude-code-ide--generate-cli-session-id)
+               (lambda () "ffffffff-ffff-4fff-afff-ffffffffffff"))
+              ;; Stop before anything is started; the id is decided by now.
+              ((symbol-function 'claude-code-ide-mcp-create-session)
+               (lambda (&rest _) (error "stop here"))))
+      (cl-flet ((id-for (continue resume)
+                  (setq captured 'unset)
+                  (cl-letf (((symbol-function 'claude-code-ide--generate-cli-session-id)
+                             (lambda () (setq captured :minted)
+                               "ffffffff-ffff-4fff-afff-ffffffffffff")))
+                    (ignore-errors
+                      (claude-code-ide--start-session continue resume))
+                    captured)))
+        ;; A fresh session mints one.
+        (should (eq (id-for nil nil) :minted))
+        ;; Continue and unnamed resume must not.
+        (should (eq (id-for t nil) 'unset))
+        (should (eq (id-for nil t) 'unset))
+        ;; A named resume uses the name it was given.
+        (should (eq (id-for nil "abc-123") 'unset))))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

@@ -1535,11 +1535,19 @@ This function handles:
                             (generate-new-buffer-name base)
                           base)))
          (session-id (claude-code-ide--generate-session-id working-dir))
-         (cli-session-id (if (stringp resume)
-                             ;; A named resume keeps writing to the named
-                             ;; session's transcript.
-                             resume
-                           (claude-code-ide--generate-cli-session-id)))
+         (cli-session-id (cond
+                          ;; A named resume keeps writing to the named
+                          ;; session's transcript, so that is this
+                          ;; instance's id.
+                          ((stringp resume) resume)
+                          ;; An unnamed resume, or a continue, lets the CLI
+                          ;; choose which conversation to reopen without
+                          ;; saying which.  It keeps writing to that
+                          ;; session's transcript, so a fresh id would name
+                          ;; a file that never exists.  Record nothing
+                          ;; rather than something untrue.
+                          ((or resume continue) nil)
+                          (t (claude-code-ide--generate-cli-session-id))))
          (session nil)
          (registered nil))
     (condition-case err
