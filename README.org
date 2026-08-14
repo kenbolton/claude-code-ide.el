@@ -133,6 +133,7 @@ The easiest way to interact with Claude Code IDE is through the transient menu i
 | =M-x claude-code-ide-menu=                | Open transient menu with all Claude Code commands |
 | =M-x claude-code-ide-emacs-tools-setup=   | Set up built-in MCP tools (e.g. xref, project)    |
 | =M-x claude-code-ide=                     | Start a new Claude Code instance for the project  |
+| =M-x claude-code-ide-in-directory=        | Start an instance in a chosen directory           |
 | =M-x claude-code-ide-send-prompt=         | Send prompt to Claude from minibuffer input       |
 | =M-x claude-code-ide-continue=            | Continue most recent conversation in new instance |
 | =M-x claude-code-ide-resume=              | Resume a previous conversation in new instance    |
@@ -164,6 +165,101 @@ Claude Code IDE automatically detects your project using Emacs' built-in =projec
 - Use =claude-code-ide-list-sessions= to see all instances across all projects and switch between them.
 
 Note for =claude-code-ide-continue=: starting a second continued instance in the same directory forks the same "most recent" conversation — that is CLI behavior.
+
+A prefix argument to =M-x claude-code-ide= names the new instance. To start one
+somewhere other than the project root — a subdirectory, a scratch tree, or a
+path outside any project — use =M-x claude-code-ide-in-directory=, which prompts
+for the directory.
+
+=M-x claude-code-ide-stop-all= stops the current project's instances, or every
+project's with a prefix argument. It asks for a full =yes= rather than a single
+keystroke, since it ends running work.
+
+** Session Overview
+
+=M-x claude-code-ide-status= opens a live =tabulated-list= buffer showing every
+running instance across your projects and worktrees, followed by resumable
+projects from Claude's on-disk history (most recently active first).
+
+One row is one /instance/, not one project, so several instances of the same
+project appear separately and are told apart by the =Instance= column.
+
+Each live instance shows a colour-coded state:
+
+| State           | Meaning                                              |
+|-----------------+------------------------------------------------------|
+| =● permission=    | An Emacs diff/tool is waiting for you to accept it   |
+| =◆ needs you=     | Claude is blocked waiting for your input             |
+| =▶ working=       | Terminal is actively producing output                |
+| =● waiting=       | Finished a turn and waiting on you                   |
+| =○ idle=          | Connected but quiet                                  |
+| =· disconnected=  | No live MCP client                                   |
+| =· resume=        | A resumable project from history (not running)       |
+
+The two "needs you" cases are distinguished: =◆ needs you= means Claude paused
+/mid-task/, while =● waiting= means it /finished/ a turn.
+
+Alongside state, instance, project and git branch, each row shows:
+
+| Column        | Meaning                                                        |
+|---------------+----------------------------------------------------------------|
+| =Last output=   | =now= while producing output, otherwise how long since it last did |
+| =Tokens=        | Output tokens this instance has produced (see below)           |
+| =Uptime=        | How long the instance's process has run                        |
+
+Columns are ordered by how much each changes what you do next, and the three
+numeric ones sort by value rather than by their rendered text.
+
+*** Token counts
+
+=Tokens= counts /output/ tokens only. Cache reads outnumber them by orders of
+magnitude while costing a fraction, so a combined figure would be dominated by
+the cheapest component. Counts are read from the instance's own transcript,
+which Claude names after the session id the instance was started with.
+
+A dash means the count cannot be attributed, never that it is zero:
+
+- The instance has produced no output yet.
+- It was resumed through =M-x claude-code-ide-resume=, which hands off to
+  Claude's own picker — the CLI does not report which conversation was chosen.
+  Resuming from a row in this overview /does/ report tokens, because the row
+  names the conversation it reopens.
+- The CLI predates =--session-id=. Support is detected once, and the flag is
+  omitted when absent rather than risking a session that will not start.
+- The session was started with =--no-session-persistence=, so nothing is written.
+
+Key bindings (Evil users: =RET= / =o= / =D= / =S= / =/= work in normal and motion
+state, and =gr= refreshes):
+
+| Key   | Action                                                             |
+|-------+--------------------------------------------------------------------|
+| =RET=   | Visit the instance, or resume the project under point              |
+| =o=     | Same, but open in a vertical split of the main editing area        |
+| =D=     | Stop the instance under point (asks for confirmation, naming it)   |
+| =S=     | Cycle the sort: each column ascending, then reversed, then default |
+| =/=     | Filter the list by typing; narrows live (empty clears)             |
+| =g=     | Refresh, rebuild the resume list, restore the default view         |
+| =q=     | Bury the buffer                                                    |
+
+Live rows are ordered by urgency, and a summary line shows counts. The
+highlighted row stays with its instance across automatic refreshes.
+
+*** Worktree-aware project names
+
+A worktree's path repeats its repository prefix on every row, which pushes the
+part that identifies the session off the right edge. When an instance's
+directory sits inside a worktree container, the =Project= column shows
+=REPOSITORY/WORKTREE= instead of the whole path; the full path remains available
+as a tooltip. Both the =<repo>/.worktrees/= layout and Claude's own
+=<repo>/.claude/worktrees/= are recognised.
+
+*** External Editor Integration
+
+Tools the CLI spawns — =git commit= without a message, for instance — open in
+your running Emacs rather than a pager, because =EDITOR= and =VISUAL= are pointed
+at =emacsclient= for the Claude subprocess. Set
+=claude-code-ide-editor-command= to =nil= to leave the inherited environment
+alone.
 
 ** Window Management
 
@@ -204,6 +300,9 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-cli-extra-flags~               | Additional CLI flags (e.g. "--model")       | ~""~                                   |
 | ~claude-code-ide-debug~                         | Enable debug logging                        | ~nil~                                  |
 | ~claude-code-ide-terminal-backend~              | Terminal backend (vterm/eat/ghostel)        | ~'vterm~                               |
+| ~claude-code-ide-editor-command~                | Command EDITOR/VISUAL point at              | ~"emacsclient"~                         |
+| ~claude-code-ide-keystroke-pacing-delay~        | Pause between keystrokes sent to the terminal | ~0.1~                                |
+| ~claude-code-ide-status-worktree-directories~   | Directory names that hold git worktrees     | ~(".worktrees" "worktrees")~            |
 | ~claude-code-ide-show-backend-recommendation~   | Suggest ghostel once on vterm/eat           | ~t~                                    |
 | ~claude-code-ide-vterm-anti-flicker~            | Enable vterm flicker reduction              | ~t~                                    |
 | ~claude-code-ide-vterm-render-delay~            | vterm render batching delay (seconds)       | ~0.005~                                |
