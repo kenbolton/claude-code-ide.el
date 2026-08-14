@@ -1225,7 +1225,13 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
       (setq claude-cmd (concat claude-cmd " -d")))
     ;; Add resume flag if requested
     (when resume
-      (setq claude-cmd (concat claude-cmd " -r")))
+      (setq claude-cmd (concat claude-cmd " -r"))
+      ;; Naming the session reopens that exact conversation, and the CLI keeps
+      ;; appending to its existing transcript rather than starting a new one.
+      ;; That is also the only way to know which transcript a resumed instance
+      ;; writes to, and so to report its tokens.
+      (when (stringp resume)
+        (setq claude-cmd (concat claude-cmd " " (shell-quote-argument resume)))))
     ;; Add continue flag if requested
     (when continue
       (setq claude-cmd (concat claude-cmd " -c")))
@@ -1529,7 +1535,11 @@ This function handles:
                             (generate-new-buffer-name base)
                           base)))
          (session-id (claude-code-ide--generate-session-id working-dir))
-         (cli-session-id (claude-code-ide--generate-cli-session-id))
+         (cli-session-id (if (stringp resume)
+                             ;; A named resume keeps writing to the named
+                             ;; session's transcript.
+                             resume
+                           (claude-code-ide--generate-cli-session-id)))
          (session nil)
          (registered nil))
     (condition-case err
@@ -1664,12 +1674,17 @@ one key with two meanings."
    nil nil (file-name-as-directory (expand-file-name directory))))
 
 ;;;###autoload
-(defun claude-code-ide-resume ()
+(defun claude-code-ide-resume (&optional session)
   "Resume Claude Code in a new instance for the current project or directory.
 This starts Claude with the -r (resume) flag to continue a previous
-conversation.  Always creates a new instance."
+conversation.  Always creates a new instance.
+
+SESSION, when given, names the conversation to reopen instead of letting
+the CLI show its picker.  Callers that already know which conversation
+they mean should pass it: the CLI then keeps writing to that session's
+transcript, which is what lets the overview report its tokens."
   (interactive)
-  (claude-code-ide--start-session nil t))
+  (claude-code-ide--start-session nil (or session t)))
 
 ;;;###autoload
 (defun claude-code-ide-continue ()

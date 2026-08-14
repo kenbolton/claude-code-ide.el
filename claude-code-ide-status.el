@@ -717,6 +717,13 @@ borrowed number:
               (mapcar (lambda (sub) (expand-file-name (concat id ".jsonl") sub))
                       (claude-code-ide-status--history-dirs dir)))))
 
+(defun claude-code-ide-status--session-id-for (dir)
+  "Return the session id of the newest conversation recorded in DIR, or nil.
+A transcript is named for its session, so its base name is the id the CLI
+needs to reopen it."
+  (when-let* ((file (claude-code-ide-status--transcript-for dir)))
+    (file-name-base file)))
+
 (defun claude-code-ide-status--output-string (dir &optional session)
   "Return formatted output tokens for SESSION, or for the project at DIR.
 With SESSION, the count is that instance's own; a live instance whose
@@ -1040,7 +1047,10 @@ project, resume Claude in that directory."
          (claude-code-ide-pop-to-session-buffer buffer)))
       ('resume
        (let ((default-directory key))
-         (claude-code-ide-resume))))))
+         ;; The row was built from a transcript, and a transcript is named
+         ;; for its session, so reopen that conversation by name rather than
+         ;; handing the user back to the CLI picker they just bypassed.
+         (claude-code-ide-resume (claude-code-ide-status--session-id-for key)))))))
 
 (defun claude-code-ide-status--main-window ()
   "Return the largest live non-side window, or nil if there is none.
