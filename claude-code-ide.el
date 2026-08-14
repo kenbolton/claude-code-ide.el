@@ -993,7 +993,13 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
       (setq claude-cmd (concat claude-cmd " -d")))
     ;; Add resume flag if requested
     (when resume
-      (setq claude-cmd (concat claude-cmd " -r")))
+      (setq claude-cmd (concat claude-cmd " -r"))
+      ;; Naming the session reopens that exact conversation, and the CLI keeps
+      ;; appending to its existing transcript rather than starting a new one.
+      ;; That is also the only way to know which transcript a resumed session
+      ;; writes to, and so to report its tokens.
+      (when (stringp resume)
+        (setq claude-cmd (concat claude-cmd " " (shell-quote-argument resume)))))
     ;; Add continue flag if requested
     (when continue
       (setq claude-cmd (concat claude-cmd " -c")))
@@ -1284,7 +1290,11 @@ This function handles:
               ;; Start MCP server
               (setq port (claude-code-ide-mcp-start working-dir))
               ;; Create new terminal session
-              (let* ((cli-session-id (claude-code-ide--generate-cli-session-id))
+              (let* ((cli-session-id (if (stringp resume)
+                                         ;; A named resume keeps writing to the
+                                         ;; named session's transcript.
+                                         resume
+                                       (claude-code-ide--generate-cli-session-id)))
                      (buffer-and-process (claude-code-ide--create-terminal-session
                                           buffer-name working-dir port continue resume session-id
                                           cli-session-id))
@@ -1376,13 +1386,18 @@ With prefix argument FORCE-DIR, use `default-directory' instead of project root.
   (claude-code-ide--start-session nil nil force-dir))
 
 ;;;###autoload
-(defun claude-code-ide-resume (&optional force-dir)
+(defun claude-code-ide-resume (&optional force-dir session)
   "Resume Claude Code in a terminal for the current project or directory.
 This starts Claude with the -r (resume) flag to continue the previous
 conversation.  With prefix argument FORCE-DIR, use `default-directory'
-instead of project root."
+instead of project root.
+
+SESSION, when given, names the conversation to reopen instead of letting
+the CLI show its picker.  Callers that already know which conversation
+they mean should pass it: the CLI then keeps writing to that session's
+transcript, which is what lets the overview report its tokens."
   (interactive "P")
-  (claude-code-ide--start-session nil t force-dir))
+  (claude-code-ide--start-session nil (or session t) force-dir))
 
 ;;;###autoload
 (defun claude-code-ide-continue (&optional force-dir)

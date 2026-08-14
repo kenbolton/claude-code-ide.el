@@ -664,6 +664,13 @@ borrowed number:
               (mapcar (lambda (sub) (expand-file-name (concat id ".jsonl") sub))
                       (claude-code-ide-status--history-dirs dir)))))
 
+(defun claude-code-ide-status--session-id-for (dir)
+  "Return the session id of the newest conversation recorded in DIR, or nil.
+A transcript is named for its session, so its base name is the id the CLI
+needs to reopen it."
+  (when-let* ((file (claude-code-ide-status--transcript-for dir)))
+    (file-name-base file)))
+
 (defun claude-code-ide-status--output-string (dir)
   "Return the output tokens produced by the session in DIR, formatted.
 
@@ -673,9 +680,10 @@ reports whichever session wrote last, so a fresh session in a directory
 with older history shows that history's total rather than its own.
 
 A dash means there is nothing to attribute yet: the session has produced
-no output, or it was resumed -- resuming reuses the original session's
-id, so the CLI writes to that file rather than to this one -- or the CLI
-predates --session-id, or transcript saving is turned off."
+no output, or it was resumed from the CLI's own picker, which
+chooses a conversation without telling us which -- resuming from the
+overview names the session and does report tokens -- or the CLI predates
+--session-id, or session persistence is turned off."
   (claude-code-ide-status--format-tokens
    (when-let* ((session (claude-code-ide-mcp--get-session-for-project
                          (claude-code-ide-status--normalize-dir dir)))
@@ -985,7 +993,10 @@ project, resume Claude in that directory."
          (user-error "The buffer for %s no longer exists" (abbreviate-file-name dir))))
       ('resume
        (let ((default-directory dir))
-         (claude-code-ide-resume))))))
+         ;; The row was built from a transcript, and a transcript is named
+         ;; for its session, so reopen that conversation by name rather than
+         ;; handing the user back to the CLI picker they just bypassed.
+         (claude-code-ide-resume nil (claude-code-ide-status--session-id-for dir)))))))
 
 (defun claude-code-ide-status--main-window ()
   "Return the largest live non-side window, or nil if there is none.

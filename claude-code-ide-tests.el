@@ -4021,6 +4021,39 @@ total for a session that has produced nothing of the sort."
       (claude-code-ide-tests--clear-processes)
       (clrhash claude-code-ide-status--output-tokens))))
 
+(ert-deftest claude-code-ide-test-resume-names-the-session ()
+  "A named resume reopens that conversation instead of the CLI picker.
+Naming it is what makes a resumed session attributable: the CLI keeps
+appending to that session's transcript, so the overview can read it."
+  (let ((claude-code-ide-system-prompt nil))
+    ;; Plain resume leaves the CLI to ask.
+    (let ((cmd (claude-code-ide--build-claude-command nil t "mcp")))
+      (should (string-match-p " -r\\($\\| \\)" cmd))
+      (should-not (string-match-p " -r +[0-9a-f]\\{8\\}-" cmd)))
+    ;; A named resume passes the session through.
+    (let ((cmd (claude-code-ide--build-claude-command
+                nil "084f12d7-5444-4dd4-94a5-5ed7fc440e83" "mcp")))
+      (should (string-match-p "-r 084f12d7-5444-4dd4-94a5-5ed7fc440e83" cmd))
+      ;; And never alongside a fresh id, which would fight it.
+      (should-not (string-match-p "--session-id" cmd)))))
+
+(ert-deftest claude-code-ide-test-status-session-id-for ()
+  "The overview recovers a conversation's id from its transcript name."
+  (setq claude-code-ide-status--transcript-map-time 0)
+  (let ((projects (make-temp-file "ccide-resumeid-" t)))
+    (unwind-protect
+        (let* ((claude-code-ide-status-projects-directory projects)
+               (dir "/tmp/resumeid-project/")
+               (sub (expand-file-name "encoded" projects))
+               (id "cccccccc-cccc-4ccc-accc-cccccccccccc"))
+          (make-directory sub t)
+          (with-temp-file (expand-file-name (concat id ".jsonl") sub)
+            (insert "{\"cwd\":\"/tmp/resumeid-project/\",\"usage\":{\"output_tokens\":5}}\n"))
+          (should (equal (claude-code-ide-status--session-id-for dir) id))
+          ;; A directory with no history yields nothing to reopen.
+          (should-not (claude-code-ide-status--session-id-for "/tmp/no-such-project/")))
+      (delete-directory projects t))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
