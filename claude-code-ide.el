@@ -752,6 +752,42 @@ INSTANCE-NAME always yields the plain single-instance name."
           (concat (substring base 0 -2) ":" instance-name "]*"))
          (t (format "%s<%s>" base instance-name)))))))
 
+(defun claude-code-ide--newest-conversation-id (working-dir)
+  "Return the id of the most recent conversation recorded for WORKING-DIR.
+`--continue' reopens the most recent conversation in a directory, so
+reading it by the same rule names the transcript the CLI will append to.
+This is not inference: it applies the CLI's own definition to the same
+files, and it is read before the CLI starts so its writes cannot move the
+answer.
+
+Deliberately a small one-shot scan rather than the overview's cached
+lookup: the overview cannot be required from here without a load cycle,
+and this runs once per session rather than on a refresh timer."
+  (let ((root (expand-file-name
+               (or (bound-and-true-p claude-code-ide-status-projects-directory)
+                   "~/.claude/projects")))
+        (target (file-name-as-directory (expand-file-name working-dir)))
+        (newest nil)
+        (newest-time nil))
+    (when (file-directory-p root)
+      (dolist (sub (directory-files root t directory-files-no-dot-files-regexp))
+        (when (file-directory-p sub)
+          (dolist (file (directory-files sub t "\\.jsonl\\'" t))
+            (let ((time (nth 5 (file-attributes file))))
+              (when (or (null newest-time) (time-less-p newest-time time))
+                ;; The directory name encodes the path lossily, so confirm
+                ;; against the cwd the transcript itself records.
+                (when (equal target
+                             (with-temp-buffer
+                               (insert-file-contents file nil 0 100000)
+                               (goto-char (point-min))
+                               (when (re-search-forward
+                                      "\"cwd\":[[:space:]]*\"\\([^\"]+\\)\"" nil t)
+                                 (file-name-as-directory (match-string 1)))))
+                  (setq newest file
+                        newest-time time))))))))
+    (when newest (file-name-base newest))))
+
 (defun claude-code-ide--generate-cli-session-id ()
   "Return a fresh UUID naming the CLI's own session.
 Passed to the CLI as `--session-id', which requires a UUID.  Claude names
@@ -1546,7 +1582,15 @@ This function handles:
                           ;; session's transcript, so a fresh id would name
                           ;; a file that never exists.  Record nothing
                           ;; rather than something untrue.
-                          ((or resume continue) nil)
+                          ;; `--continue' reopens the most recent
+                          ;; conversation here, so that transcript is the
+                          ;; one this instance will write to.  Read it
+                          ;; before the CLI starts.
+                          (continue (claude-code-ide--newest-conversation-id
+                                     working-dir))
+                          ;; An unnamed resume lets the user pick from the
+                          ;; CLI's own list, which it does not report.
+                          (resume nil)
                           (t (claude-code-ide--generate-cli-session-id))))
          (session nil)
          (registered nil))

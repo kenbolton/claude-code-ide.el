@@ -5234,6 +5234,39 @@ the id was set, and the CLI was writing elsewhere."
         ;; A named resume uses the name it was given.
         (should (eq (id-for nil "abc-123") 'unset))))))
 
+(ert-deftest claude-code-ide-test-newest-conversation-id ()
+  "The newest conversation is found by the same rule `--continue' uses.
+It reopens the most recent conversation in the directory, so naming that
+transcript is exact rather than a guess -- but only if the match is made
+on the cwd each transcript records, since the directory name encodes the
+path lossily and other projects sit alongside."
+  (let ((projects (make-temp-file "ccide-newest-" t)))
+    (unwind-protect
+        (let ((claude-code-ide-status-projects-directory projects)
+              (mine (expand-file-name "encoded-mine" projects))
+              (other (expand-file-name "encoded-other" projects)))
+          (make-directory mine t)
+          (make-directory other t)
+          (with-temp-file (expand-file-name "older.jsonl" mine)
+            (insert "{\"cwd\":\"/tmp/newest-project/\"}\n"))
+          (with-temp-file (expand-file-name "newer.jsonl" mine)
+            (insert "{\"cwd\":\"/tmp/newest-project/\"}\n"))
+          ;; A different project, made newest of all, must not win.
+          (with-temp-file (expand-file-name "decoy.jsonl" other)
+            (insert "{\"cwd\":\"/tmp/somewhere-else/\"}\n"))
+          (set-file-times (expand-file-name "older.jsonl" mine) (seconds-to-time 1000))
+          (set-file-times (expand-file-name "newer.jsonl" mine) (seconds-to-time 2000))
+          (set-file-times (expand-file-name "decoy.jsonl" other) (current-time))
+
+          (should (equal (claude-code-ide--newest-conversation-id "/tmp/newest-project/")
+                         "newer"))
+          ;; A trailing slash is not required of the caller.
+          (should (equal (claude-code-ide--newest-conversation-id "/tmp/newest-project")
+                         "newer"))
+          ;; Nothing recorded for a directory yields nothing to continue.
+          (should-not (claude-code-ide--newest-conversation-id "/tmp/no-history/")))
+      (delete-directory projects t))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
