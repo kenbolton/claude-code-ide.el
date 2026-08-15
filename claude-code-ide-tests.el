@@ -5267,6 +5267,45 @@ path lossily and other projects sit alongside."
           (should-not (claude-code-ide--newest-conversation-id "/tmp/no-history/")))
       (delete-directory projects t))))
 
+(ert-deftest claude-code-ide-test-status-branch-is-cached ()
+  "The branch lookup asks git once per directory per TTL window.
+Reading a branch spawns a subprocess and the overview reads one per row
+on every refresh, so an uncached lookup costs a fifth of a second per
+refresh for eight rows.  A directory outside any repository must be
+cached too: its answer cannot change, yet it was the case that re-asked
+git forever."
+  (let ((calls 0))
+    (cl-letf (((symbol-function 'vc-git-branches)
+               (lambda () (cl-incf calls) (list "feature-x"))))
+      (clrhash claude-code-ide-status--branch-cache)
+      (let ((claude-code-ide-status-branch-cache-ttl 10))
+        ;; First call asks; the rest are served from the cache.
+        (should (equal (claude-code-ide-status--branch "/tmp/repo/") "feature-x"))
+        (dotimes (_ 5) (claude-code-ide-status--branch "/tmp/repo/"))
+        (should (= calls 1))
+        ;; A different directory is a separate question.
+        (claude-code-ide-status--branch "/tmp/other/")
+        (should (= calls 2))
+        ;; A trailing slash must not split the cache entry.
+        (claude-code-ide-status--branch "/tmp/repo")
+        (should (= calls 2)))
+      ;; An expired entry asks again.
+      (clrhash claude-code-ide-status--branch-cache)
+      (setq calls 0)
+      (let ((claude-code-ide-status-branch-cache-ttl 0))
+        (claude-code-ide-status--branch "/tmp/repo/")
+        (claude-code-ide-status--branch "/tmp/repo/")
+        (should (= calls 2))))
+    ;; A directory under no repository caches its absence.
+    (cl-letf (((symbol-function 'vc-git-branches)
+               (lambda () (cl-incf calls) (error "not a repository"))))
+      (clrhash claude-code-ide-status--branch-cache)
+      (setq calls 0)
+      (let ((claude-code-ide-status-branch-cache-ttl 10))
+        (should-not (claude-code-ide-status--branch "/tmp/plain-dir/"))
+        (dotimes (_ 5) (claude-code-ide-status--branch "/tmp/plain-dir/"))
+        (should (= calls 1))))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

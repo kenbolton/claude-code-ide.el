@@ -407,10 +407,36 @@ rather than by the glyph of the label string."
                   (format "%s" state))))
     (propertize label 'sort-rank (claude-code-ide-status--state-rank state))))
 
+(defcustom claude-code-ide-status-branch-cache-ttl 10
+  "Seconds to reuse a directory's git branch before asking git again.
+Reading a branch spawns a subprocess, and the overview reads one per row
+on every refresh -- measured at 0.2 seconds for eight rows, against a
+1.5 second refresh interval, for a value that changes when you switch
+branches and not otherwise.  Set to 0 to ask git every time."
+  :type 'number
+  :group 'claude-code-ide)
+
+(defvar claude-code-ide-status--branch-cache (make-hash-table :test 'equal)
+  "Maps a directory to (TIME . BRANCH) from its last git lookup.
+BRANCH is nil for a directory under no git repository, and that absence
+is cached too: without it, every refresh re-asks git a question whose
+answer cannot change.")
+
 (defun claude-code-ide-status--branch (dir)
-  "Return the current git branch name for DIR, or nil if unavailable."
-  (let ((default-directory (file-name-as-directory dir)))
-    (ignore-errors (car (vc-git-branches)))))
+  "Return the current git branch name for DIR, or nil if unavailable.
+Cached for `claude-code-ide-status-branch-cache-ttl' seconds; a branch
+switch appears within that window rather than immediately."
+  (let* ((key (file-name-as-directory (expand-file-name dir)))
+         (entry (gethash key claude-code-ide-status--branch-cache)))
+    (if (and entry
+             (< (- (float-time) (car entry))
+                claude-code-ide-status-branch-cache-ttl))
+        (cdr entry)
+      (let* ((default-directory key)
+             (branch (ignore-errors (car (vc-git-branches)))))
+        (puthash key (cons (float-time) branch)
+                 claude-code-ide-status--branch-cache)
+        branch))))
 
 (defun claude-code-ide-status--format-duration (seconds)
   "Format SECONDS as a compact human-readable duration."
